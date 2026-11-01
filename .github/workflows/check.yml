@@ -2,7 +2,9 @@ name: Check
 on:
   push:
     branches: [main]
+    paths-ignore: ['**/*.md']
   pull_request:
+    paths-ignore: ['**/*.md']
 permissions:
   contents: read
 jobs:
@@ -20,11 +22,14 @@ jobs:
         with:
           version: 11
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
       - run: pnpm install --frozen-lockfile
       - run: python scripts/install_engine.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: pnpm build
       - run: cargo test -p twinlink-core --locked
       - run: cargo test -p twinlink --locked

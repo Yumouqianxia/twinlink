@@ -14,7 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def request(url):
-    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "TwinLink-setup/0.1"}), timeout=120)
+    headers = {"User-Agent": "TwinLink-setup/0.1"}
+    # Hosted runners share anonymous GitHub API quotas. Use the ephemeral
+    # read-only workflow token for API metadata, never for download/CDN URLs.
+    token = os.environ.get("GITHUB_TOKEN")
+    if token and url.startswith("https://api.github.com/"):
+        headers["Authorization"] = "Bearer " + token
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
 
 
 def main():

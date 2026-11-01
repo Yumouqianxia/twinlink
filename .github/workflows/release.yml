@@ -50,6 +50,8 @@ jobs:
         run: python scripts/release.py validate
       - run: pnpm install --frozen-lockfile
       - run: python scripts/install_engine.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: cargo test -p twinlink-core --locked
       - run: cargo test -p twinlink --locked
       - name: Build signed updater artifacts
