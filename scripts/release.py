@@ -20,17 +20,17 @@ PLATFORMS = {'darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'}
 
 
 def version():
-    return json.loads((ROOT / 'package.json').read_text())['version']
+    return json.loads((ROOT / 'package.json').read_text(encoding='utf-8'))['version']
 
 
 def validate():
     value = version()
     assert re.fullmatch(r'\d+\.\d+\.\d+', value), 'Use a numeric x.y.z version; GitHub marks 0.x as prerelease'
     assert os.environ.get('RELEASE_TAG') == 'v' + value, 'Tag must match package version'
-    assert json.loads((ROOT / 'src-tauri/tauri.conf.json').read_text())['version'] == value
+    assert json.loads((ROOT / 'src-tauri/tauri.conf.json').read_text(encoding='utf-8'))['version'] == value
     import tomllib
     for path in ['src-tauri/Cargo.toml', 'crates/twinlink-core/Cargo.toml']:
-        assert tomllib.loads((ROOT / path).read_text())['package']['version'] == value
+        assert tomllib.loads((ROOT / path).read_text(encoding='utf-8'))['package']['version'] == value
     print('Validated release version: v' + value)
     return value
 
@@ -43,15 +43,15 @@ def stage(platform, target):
     candidates = list(Path(target).glob(pattern))
     assert len(candidates) == 1, 'Expected exactly one built updater package'
     source = candidates[0]
-    signature = Path(str(source) + '.sig').read_text().strip()
+    signature = Path(str(source) + '.sig').read_text(encoding='utf-8').strip()
     assert signature and len(signature) < 8192, 'Missing update signature'
     suffix = '-setup.exe' if platform.startswith('windows') else '.app.tar.gz'
     name = f'TwinLink_{version()}_{platform}{suffix}'
     shutil.copyfile(source, destination / name)
-    (destination / (name + '.sig')).write_text(signature + '\n')
+    (destination / (name + '.sig')).write_text(signature + '\n', encoding='utf-8')
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     fragment = {'platform': platform, 'url': f'https://github.com/{REPO}/releases/download/v{version()}/{name}', 'signature': signature, 'sha256': digest, 'file': name}
-    (destination / (platform + '.json')).write_text(json.dumps(fragment, indent=2) + '\n')
+    (destination / (platform + '.json')).write_text(json.dumps(fragment, indent=2) + '\n', encoding='utf-8')
     print('Staged signed package:', name)
 
 
@@ -70,7 +70,7 @@ def publish():
     value = validate()
     assert os.environ.get('GH_REPO') == REPO, 'Updates are locked to the official repository'
     destination = ROOT / 'release-assets'
-    fragments = [json.loads((destination / (platform + '.json')).read_text()) for platform in sorted(PLATFORMS)]
+    fragments = [json.loads((destination / (platform + '.json')).read_text(encoding='utf-8')) for platform in sorted(PLATFORMS)]
     platforms = {}
     paths = []
     checksums = []
@@ -82,7 +82,7 @@ def publish():
         assert f['url'] == expected
         package = destination / f['file']
         assert hashlib.sha256(package.read_bytes()).hexdigest() == f['sha256']
-        assert Path(str(package) + '.sig').read_text().strip() == f['signature']
+        assert Path(str(package) + '.sig').read_text(encoding='utf-8').strip() == f['signature']
         platforms[platform] = {'url': f['url'], 'signature': f['signature']}
         paths.extend([str(package), str(package) + '.sig'])
         checksums.append(f'{f["sha256"]}  {f["file"]}')
@@ -94,17 +94,17 @@ def publish():
         previous = json.loads(base64.b64decode(old['content']))
         assert tuple(map(int, value.split('.'))) >= tuple(map(int, previous['version'].split('.'))), 'Refusing channel downgrade'
     existing = gh('release', 'view', tag, '--repo', REPO, '--json', 'isDraft', optional=True)
-    notes = (ROOT / 'docs/RELEASE-NOTES.md').read_text()
+    notes = (ROOT / 'docs/RELEASE-NOTES.md').read_text(encoding='utf-8')
     manifest = {'version': value, 'notes': notes, 'platforms': platforms}
-    (destination / 'latest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
-    (destination / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n')
+    (destination / 'latest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    (destination / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='utf-8')
     paths += [str(destination / 'latest.json'), str(destination / 'SHA256SUMS.txt')]
     if existing is not None and not existing['isDraft']:
         # A failed channel commit may be retried after publication, but never
         # replace already published bytes with a different rebuild.
         with tempfile.TemporaryDirectory() as directory:
             gh('release', 'download', tag, '--repo', REPO, '--pattern', 'latest.json', '--dir', directory)
-            assert json.loads((Path(directory) / 'latest.json').read_text()) == manifest, 'A published version is immutable; use a new version tag'
+            assert json.loads((Path(directory) / 'latest.json').read_text(encoding='utf-8')) == manifest, 'A published version is immutable; use a new version tag'
     else:
         if existing is None:
             gh('release', 'create', tag, '--repo', REPO, '--verify-tag', '--draft', '--title', f'同频 TwinLink {tag}' + (' · 预发布版' if value.startswith('0.') else ''), '--notes-file', str(ROOT / 'docs/RELEASE-NOTES.md'))

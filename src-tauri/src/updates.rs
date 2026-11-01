@@ -55,9 +55,13 @@ pub async fn check_update(app: AppHandle, updates: State<'_, Updates>) -> Reply<
             else { attempt.error("更新重定向超出 GitHub 范围") }
         })))
         .build().map_err(|_| "无法初始化更新组件。")?;
-    let update = updater.check().await.map_err(|_| "无法从 GitHub 检查更新，请检查网络后重试。")?;
+    let mut update = updater.check().await.map_err(|_| "无法从 GitHub 检查更新，请检查网络后重试。")?;
     if update.as_ref().is_some_and(|u| !asset(&u.download_url)) {
         return Err("更新包地址不属于本项目的 GitHub Releases，已拒绝。".into());
+    }
+    // Metadata is small; package downloads need a longer allowance on slow links.
+    if let Some(package) = update.as_mut() {
+        package.timeout = Some(Duration::from_secs(15 * 60));
     }
     let info = UpdateInfo {
         current_version: app.package_info().version.to_string(),
