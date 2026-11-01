@@ -47,14 +47,27 @@ fn redirect_allowed(url: &Url) -> bool {
 pub async fn check_update(app: AppHandle, updates: State<'_, Updates>) -> Reply<UpdateInfo> {
     let mut pending = updates.0.try_lock().map_err(|_| "正在检查或安装更新，请稍候。".to_string())?;
     *pending = None;
-    let updater = app.updater_builder()
+    let builder = app.updater_builder()
         .endpoints(vec![Url::parse(ENDPOINT).expect("fixed HTTPS endpoint")]).map_err(|_| "更新源配置错误。")?
         .timeout(Duration::from_secs(60))
         .configure_client(|client| client.redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() < 5 && redirect_allowed(attempt.url()) { attempt.follow() }
             else { attempt.error("更新重定向超出 GitHub 范围") }
-        })))
-        .build().map_err(|_| "无法初始化更新组件。")?;
+        })));
+    // The Windows installer exits the process itself, before the normal exit
+    // event. Stop EasyTier first so no networking child is orphaned. A separate
+    // thread avoids nesting block_on inside this command's async runtime.
+    #[cfg(windows)]
+    let builder = {
+        let core = app.state::<AppState>().0.clone();
+        let exit_app = app.clone();
+        builder.on_before_exit(move || {
+            let core = core.clone();
+            let _ = std::thread::spawn(move || tauri::async_runtime::block_on(core.shutdown())).join();
+            exit_app.cleanup_before_exit();
+        })
+    };
+    let updater = builder.build().map_err(|_| "无法初始化更新组件。")?;
     let mut update = updater.check().await.map_err(|_| "无法从 GitHub 检查更新，请检查网络后重试。")?;
     if update.as_ref().is_some_and(|u| !asset(&u.download_url)) {
         return Err("更新包地址不属于本项目的 GitHub Releases，已拒绝。".into());

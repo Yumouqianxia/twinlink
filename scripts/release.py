@@ -50,7 +50,8 @@ def stage(platform, target):
     shutil.copyfile(source, destination / name)
     (destination / (name + '.sig')).write_text(signature + '\n', encoding='utf-8')
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    fragment = {'platform': platform, 'url': f'https://github.com/{REPO}/releases/download/v{version()}/{name}', 'signature': signature, 'sha256': digest, 'file': name}
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip()
+    fragment = {'platform': platform, 'url': f'https://github.com/{REPO}/releases/download/v{version()}/{name}', 'signature': signature, 'sha256': digest, 'file': name, 'commit': commit}
     (destination / (platform + '.json')).write_text(json.dumps(fragment, indent=2) + '\n', encoding='utf-8')
     print('Staged signed package:', name)
 
@@ -74,7 +75,9 @@ def publish():
     platforms = {}
     paths = []
     checksums = []
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip()
     for f in fragments:
+        assert f['commit'] == commit, 'All packages must match the release tag source commit'
         platform = f['platform']
         assert platform in PLATFORMS and platform not in platforms
         assert Path(f['file']).name == f['file']
