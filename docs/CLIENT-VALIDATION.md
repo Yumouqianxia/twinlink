@@ -12,13 +12,14 @@ Rust 已持久安装到 `~/.cargo` 与 `~/.rustup`；DSH 已安装，项目入�
 
 | 检查 | 实际结果 |
 | --- | --- |
-| `pnpm build` | TypeScript 与 Vite 通过；CSS 25.00 kB、JS 45.23 kB |
+| `pnpm build` | TypeScript 与 Vite 通过；CSS 25.30 kB、JS 48.07 kB |
 | `cargo test -p twinlink-core` | 51 passed、0 failed、1 ignored；无编译警告 |
 | `cargo check -p twinlink` | 通过 |
-| `pnpm tauri build --bundles app --ci` | Release `.app` 打包成功，约 29.22 MiB |
+| `cargo test -p twinlink` | 更新源和重定向限制的 2 项测试通过 |
+| `pnpm tauri build --bundles app --ci` | 带更新签名的 Release `.app` 打包成功，约 30.17 MiB |
 | 服务端 Python 单元测试 | 6 项通过 |
 
-最终应用安装在 `/Users/jinchen/Applications/TwinLink.app`，已在真实 HOME 下打开原生窗口，配对入口可用，保留已导入的服务器配置，不预先创建用户房间。应用内包含独立 EasyTier 引擎。最终安装包及内置引擎已补做本地 ad-hoc 签名，`codesign --verify --deep --strict` 通过，补签后重新启动成功。未做 Apple 开发者签名和公证，也未生成或验证 Windows 安装包。
+最终应用 v0.0.1 安装在 `/Users/jinchen/Applications/TwinLink.app`，已在真实 HOME 下打开原生窗口，配对入口可用，保留已导入的服务器配置，不预先创建用户房间。应用内包含独立 EasyTier 引擎。最终安装包使用 ad-hoc 签名，`codesign --verify --deep --strict` 通过。未做 Apple 开发者签名和公证；Windows x64 安装包现已通过云端构建和更新签名验证，但未做 Windows 真机安装验收。
 
 ## 核心和存储验证
 
@@ -68,3 +69,17 @@ DSH 通过 Playwright 在 Chromium 中执行六组场景，均通过。此部分
 - 服务器服务证书有效至 2027-10-31 UTC，需到期前维护；维护脚本已放在服务器 `/opt/twinlink/deploy-server.sh`，私有 CA 到期前还需重新配置客户端信任。
 
 凭据、房间种子与服务器设置码保留在项目外的私有目录；不得加入源码、截图、公开日志或分发包。
+
+## v0.0.1 GitHub 更新验收
+
+公开仓库为 `Yumouqianxia/twinlink`，`v0.0.1` Release 的 `isPrerelease=true`、`isDraft=false`。macOS Apple Silicon、macOS Intel、Windows x64 的构建、各平台核心/适配层测试和产物上传均通过；普通 macOS/Windows Check 工作流也通过。CI 曾遇到 Windows 默认文本编码和匿名 GitHub API 配额问题，最终代码显式使用 UTF-8，并在下载元数据时使用只读工作流认证。
+
+固定清单 `https://raw.githubusercontent.com/Yumouqianxia/twinlink/updates/latest.json` 已匿名读取成功，含三个平台及其签名包地址。`updates` 是只含清单的独立分支，已完成首次初始化，并验证 Actions 后续更新清单成功。
+
+原生完整流程使用实际 bundle 版本 0.0.0 的验收副本执行，没有模拟更新 API：点击“检查更新”发现 v0.0.1，再点击“更新至 v0.0.1 并重启”，从公开 GitHub 下载、校验签名、安装并自动重启。随后 bundle 版本变成 0.0.1，原生设置显示“当前已是最新预览版。更新源：GitHub。”。最终应用目录也已替换为该验证过的版本并重新启动。
+
+此次更新前后的配置文件 SHA-256、SQLite 各表行数一致，未改动既有配置或数据；验收时正式数据目录没有聊天记录，因此不把这项对比描述成“带大量历史的整包更新实测”。大量历史分页、真实聊天/附件重启恢复已由前述 Core 验收覆盖。
+
+另用与 updater 相同的 Minisign 验证库检查实际 macOS Apple Silicon 包与 Windows 安装包：签名及绑定的 0.0.1 版本有效，篡改包字节或签名中的版本注释都会被拒绝。Playwright 新增更新界面回归覆盖预览禁用、已最新、发现版本、纯文本发布说明、显式安装、失败后可重试，无 pageerror。
+
+公开前对暂存源码、最终应用包做了实际 API 密钥、服务器访问令牌、更新签名私钥的值扫描，未发现泄露；签名私钥只保存在本机私有目录及仓库 Actions Secret。未做 Windows 或 Intel Mac 上的真实 GUI 安装/重启验收，也未做断电中的应用包替换实验。

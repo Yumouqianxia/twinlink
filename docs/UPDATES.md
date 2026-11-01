@@ -17,6 +17,8 @@ v0.0.1 是非正式预发布版。更新覆盖完整的 Tauri 应用（前端、
 - 内置 Tauri updater 公钥验证每个包；启用 `requireSignedVersion`，签名必须绑定清单版本。禁止降级安装。
 - 0.x 版本在 GitHub Release 中标为 prerelease。固定 `updates` 分支清单可发布预览版本，不依赖忽略 prerelease 的 `/releases/latest`。
 
+该仓库的 `updates` 分支已完成首次初始化，只保存公开的 `latest.json`；后续 Actions 仅更新此文件，不把源码或工作流文件复制到更新分支。
+
 本地开发预览不检查或安装更新。不能访问 GitHub 时显示错误并保留现有版本，不切换镜像或私人服务器。
 
 ## 发布下一版

@@ -53,7 +53,7 @@ pnpm tauri dev
 pnpm build
 cargo test -p twinlink-core
 cargo check -p twinlink
-pnpm tauri build --bundles app  # macOS 本机 .app
+pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'  # macOS 本机测试包
 ```
 
 Windows 和 macOS 由 GitHub Actions 分别构建。macOS 使用本地 ad-hoc 签名，
