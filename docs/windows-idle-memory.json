@@ -1,0 +1,57 @@
+{
+  "CapturedAt": "2026-10-30 23:26:07",
+  "State": "Idle, disconnected; EasyTier not running",
+  "Processes": [
+    {
+      "ProcessId": 15448,
+      "ParentProcessId": 27760,
+      "Name": "TwinLink.exe",
+      "WorkingSetSize": 30707712,
+      "PrivatePageCount": 5955584
+    },
+    {
+      "ProcessId": 22812,
+      "ParentProcessId": 15448,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 140857344,
+      "PrivatePageCount": 45756416
+    },
+    {
+      "ProcessId": 29356,
+      "ParentProcessId": 22812,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 17358848,
+      "PrivatePageCount": 3166208
+    },
+    {
+      "ProcessId": 23080,
+      "ParentProcessId": 22812,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 110632960,
+      "PrivatePageCount": 111648768
+    },
+    {
+      "ProcessId": 42484,
+      "ParentProcessId": 22812,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 43585536,
+      "PrivatePageCount": 11972608
+    },
+    {
+      "ProcessId": 4512,
+      "ParentProcessId": 22812,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 24788992,
+      "PrivatePageCount": 7913472
+    },
+    {
+      "ProcessId": 14720,
+      "ParentProcessId": 22812,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 82968576,
+      "PrivatePageCount": 32972800
+    }
+  ],
+  "WorkingSetSumBytes": 450899968.0,
+  "PrivateCommitSumBytes": 219385856.0
+}

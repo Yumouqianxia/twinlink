@@ -1,0 +1,23 @@
+node_modules/
+dist/
+target/
+.DS_Store
+*.log
+*.part
+*.db
+*.db-*
+config.local.*
+
+# Local tools, credentials and generated artifacts never belong in a release.
+.env
+.env.*
+*.key
+*.key.pub
+*.pem
+!crates/twinlink-core/tests/fixtures/test-ca.pem
+__pycache__/
+*.pyc
+src-tauri/gen/
+src-tauri/engine/*
+!src-tauri/engine/.gitkeep
+release-assets/

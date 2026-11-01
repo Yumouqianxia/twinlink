@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TwinLink",
+  "version": "0.0.1",
+  "identifier": "app.twinlink.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "同频 · TwinLink",
+        "width": 1160,
+        "height": 780,
+        "minWidth": 880,
+        "minHeight": 620,
+        "additionalBrowserArgs": "--disable-gpu"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": [
+      "engine/*",
+      "../THIRD_PARTY_NOTICES.md",
+      "../third-party/easytier/LICENSE"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVGQjYxMUY0QTE3NUE2ODQKUldTRXBuV2g5QkcyWHhKNXFpNnI0aVFnRmJKZXQyeWZ1TVE5WjM3bEMreTRJOWlEQTI3MnluN3gK",
+      "endpoints": [
+        "https://raw.githubusercontent.com/Yumouqianxia/twinlink/updates/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

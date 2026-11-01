@@ -1,0 +1,57 @@
+{
+  "CapturedAt": "2026-10-30 23:30:06",
+  "State": "Idle, disconnected; --disable-gpu; only TwinLink and its WebView2 descendants; EasyTier not running",
+  "Processes": [
+    {
+      "ProcessId": 4300,
+      "ParentProcessId": 15828,
+      "Name": "TwinLink.exe",
+      "WorkingSetSize": 28344320,
+      "PrivatePageCount": 5554176
+    },
+    {
+      "ProcessId": 35928,
+      "ParentProcessId": 4300,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 130899968,
+      "PrivatePageCount": 42037248
+    },
+    {
+      "ProcessId": 43844,
+      "ParentProcessId": 35928,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 17346560,
+      "PrivatePageCount": 3166208
+    },
+    {
+      "ProcessId": 18040,
+      "ParentProcessId": 35928,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 60628992,
+      "PrivatePageCount": 18620416
+    },
+    {
+      "ProcessId": 24200,
+      "ParentProcessId": 35928,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 43302912,
+      "PrivatePageCount": 11526144
+    },
+    {
+      "ProcessId": 32728,
+      "ParentProcessId": 35928,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 24461312,
+      "PrivatePageCount": 7716864
+    },
+    {
+      "ProcessId": 12444,
+      "ParentProcessId": 35928,
+      "Name": "msedgewebview2.exe",
+      "WorkingSetSize": 83410944,
+      "PrivatePageCount": 29908992
+    }
+  ],
+  "WorkingSetSumBytes": 388395008.0,
+  "PrivateCommitSumBytes": 118530048.0
+}
