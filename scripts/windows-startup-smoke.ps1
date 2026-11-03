@@ -1,4 +1,4 @@
-param([string]$Tag = 'v0.0.1')
+param([string]$Tag = 'v0.0.1', [ValidateSet('normal', 'blocked-downloads')][string]$Scenario = 'normal')
 $ErrorActionPreference = 'Stop'
 if ($Tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' }
 $resultDir = Join-Path $PWD 'startup-results'
@@ -18,10 +18,18 @@ if (-not (Test-Path $exe)) { throw 'Installed twinlink.exe missing' }
 Get-ChildItem -Recurse $installDir | Select-Object FullName,Length | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $resultDir 'installed-files.json')
 $stdout = Join-Path $resultDir 'stdout.txt'
 $stderr = Join-Path $resultDir 'stderr.txt'
+$env:TWINLINK_NO_ERROR_DIALOG = '1'
+if ($Scenario -eq 'blocked-downloads') {
+  # Only runs on disposable GitHub-hosted Windows users, never a user's PC.
+  $blocked = Join-Path $env:RUNNER_TEMP 'not-a-download-directory'
+  Set-Content -Path $blocked -Value 'existing test file must not be overwritten'
+  New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -Name '{374DE290-123F-4565-9164-39C4925E467B}' -Value $blocked -PropertyType ExpandString -Force | Out-Null
+}
 $app = Start-Process -FilePath $exe -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 $earlyExit = $app.WaitForExit(20000)
 $report = @{
   tag = $Tag
+  scenario = $Scenario
   os = [Environment]::OSVersion.VersionString
   processSurvived20Seconds = -not $earlyExit
   exitCode = $(if ($earlyExit) { $app.ExitCode } else { $null })
@@ -38,4 +46,6 @@ foreach ($root in @('HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients', 'HKLM:\SOFTWA
 if (-not $earlyExit) { Stop-Process -Id $app.Id -Force }
 $report | ConvertTo-Json -Depth 4 | Tee-Object -FilePath (Join-Path $resultDir 'result.json')
 Get-Content $stderr
+$log = Join-Path $env:LOCALAPPDATA 'TwinLink\logs\startup.log'
+if (Test-Path $log) { Copy-Item $log (Join-Path $resultDir 'startup.log') }
 if ($earlyExit) { throw "Installed application exited early: $($app.ExitCode)" }

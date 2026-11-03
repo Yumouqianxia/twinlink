@@ -7,6 +7,11 @@ on:
         default: v0.0.1
         required: true
         type: string
+      scenario:
+        description: 'Startup condition on an isolated test runner'
+        default: normal
+        type: choice
+        options: [normal, blocked-downloads]
 permissions:
   contents: read
 jobs:
@@ -24,7 +29,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TEST_RELEASE_TAG: ${{ inputs.tag }}
-        run: ./scripts/windows-startup-smoke.ps1 -Tag $env:TEST_RELEASE_TAG
+          TEST_STARTUP_SCENARIO: ${{ inputs.scenario }}
+        run: ./scripts/windows-startup-smoke.ps1 -Tag $env:TEST_RELEASE_TAG -Scenario $env:TEST_STARTUP_SCENARIO
       - uses: actions/upload-artifact@v4
         if: always()
         with:
