@@ -8,7 +8,9 @@
 
 v0.0.2 修正为下载目录解析或创建失败时使用应用数据目录下的 `received`，不改变既有已保存的下载偏好；其他初始化错误明确显示提示并写本地启动日志，避免无提示退出。日志只写启动阶段、组件版本和初始化错误，不序列化聊天、房间或服务器配置。Windows 默认日志位置为 `%LOCALAPPDATA%\TwinLink\logs\startup.log`，不可写时回退到 `%TEMP%\TwinLink\logs\startup.log`。数据库初始化失败不清空或替换用户数据库。
 
-发布流程增加“安装本次构建的 NSIS 包 → 正常启动 → 异常 Downloads 启动 → 损坏数据库受控退出”检查；正常/回退场景还要求实际前端通过 Tauri IPC 请求快照，不能仅靠进程存活判断成功。测试夹具只允许运行在一次性 GitHub Actions runner，目录重定向在结束时恢复。最终实际执行结果在构建完成后补充。
+发布流程增加“安装本次构建的 NSIS 包 → 正常启动 → 异常 Downloads 启动 → 损坏数据库受控退出”检查；正常/回退场景还要求实际前端通过 Tauri IPC 请求快照，不能仅靠进程存活判断成功。测试夹具只允许运行在一次性 GitHub Actions runner，目录重定向在结束时恢复。按用户要求，本次仅推送源码供 Windows 实机测试，不创建新 tag 或 Release；候选版的这些安装包检查尚未执行，不作为已通过项目。
+
+候选版在本机通过 `pnpm build`、`cargo test -p twinlink-core --locked`（51 passed、0 failed、1 ignored）、`cargo test -p twinlink --locked`（4 passed）及 `cargo check -p twinlink --locked`。现有 GitHub 更新元数据仍指向 v0.0.1。
 
 ## 2026-11-03 macOS 图标尺寸修正
 
