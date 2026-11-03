@@ -1,0 +1,33 @@
+name: Windows installed-app startup
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published installer tag to diagnose'
+        default: v0.0.1
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  installed-startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and launch the actual published installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_RELEASE_TAG: ${{ inputs.tag }}
+        run: ./scripts/windows-startup-smoke.ps1 -Tag $env:TEST_RELEASE_TAG
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-${{ matrix.os }}
+          path: startup-results/
+          if-no-files-found: warn
