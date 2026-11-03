@@ -1,18 +1,18 @@
 {
-  "version": "0.0.1",
-  "notes": "同频 TwinLink v0.0.1 是首个公开预发布版本，尚非正式版。\n\n- 配对码建立双人房间，无需输入对方 IP。\n- 本地聊天历史、加密离线消息、投递回执。\n- 需接收方同意的加密文件传输、断点续传、同名不覆盖。\n- GitHub 固定更新源，签名校验，更新后重启并保留本地记录。\n\n首次使用需要管理员提供服务器设置码。公开下载不附带私有服务器凭据。\n目前文件统一经过 HTTPS 离线信箱，暂存最多 7 天、单文件最大 1 GiB。\n局域网游戏/TUN 模式尚未提供。macOS 为 ad-hoc 签名、未公证；Windows 安装包未使用商业代码签名证书，系统可能提示未知发行者。CI 构建通过不等于已完成两台不同网络设备的实测。\n\n应用不会自动安装新版本；发现更新后，请到“设置 → 应用更新”确认更新并重启。\n",
+  "version": "0.0.2",
+  "notes": "同频 TwinLink v0.0.2 · 预发布版，尚非正式版。\n\n- 修复 Windows 下载目录不可用时，启动回调报 `unknown path` 并直接退出的问题。此时改用应用数据目录内的接收文件夹，可在设置中更改。\n- 启动失败显示明确提示，并记录本地启动日志，便于定位 WebView2、路径和数据库初始化问题；不记录聊天内容、配对码或服务器令牌。\n- 发布前增加实际 Windows 安装包的正常启动、下载目录异常启动、损坏数据库受控退出和前端 IPC 就绪检查；任一检查失败不会发布或推进更新源。\n- 修正 macOS 图标透明边距，使其与其他应用的视觉尺寸接近。\n\nWindows 启动日志：`%LOCALAPPDATA%\\TwinLink\\logs\\startup.log`；若该目录无法写入，回退到 `%TEMP%\\TwinLink\\logs\\startup.log`。\n本机 Windows 11 x64 已从源码构建并实际安装，确认原生界面、设置页和真实 Tauri IPC 正常。无法进入 v0.0.1 时，请下载 v0.0.2 完整安装包手动升级，不能依赖应用内更新。\n\n本次确认并修复了下载目录异常这一闪退路径，不能据此认定所有电脑的闪退原因相同。局域网游戏模式仍未提供；macOS 未公证，Windows 未使用商业代码签名证书。\n",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.1/TwinLink_0.0.1_darwin-aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDNqQkFHaUVXdyt0VmJlTjU3L2N2b0ZlUUE0OUZCSW8zV3NWc1ZISEVwTC81ZEkwUEdISU5oTm1GVENSYUVmRFNSZnFpc2k0ZG5PbXgvWjNrWkVUWlFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNTI1OTAyCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC4xClNKL3hiSFE0aEhLSVB3NHUyeVVldHNlRkVSck9idDRKaE5SR3NIdyszUUY2RlBkejhyb04reXo4SW1MV1dIYmZjTHAzZitQWTdZT21iMThRUVZuQkFnPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.2/TwinLink_0.0.2_darwin-aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDNQVmpvNTR4TWRoa1RFQUpYUW1ZZFBPQzdOYUhwSnZmcVhIVlJHRHNUOW5kWUNPbkdzUFZUbjQ2aWt4b0ppYmVibThxVi9wa1VISisweUtYUXNGWWdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzIwNzkyCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC4yCkJVazlRcnVQRnVKdzJIUTh4REM5QjFiUHY0RlNKWmY0R0haOWFqRDNGOUwvZWMrSXdyTmwyc2FkUGthRDBDTVk2U2NsaWpselRsaU40WG1QZ0VMUEJ3PT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.1/TwinLink_0.0.1_darwin-x86_64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWCsxMlVrSnRrZVBKMVdyYWE3alhvbXVtM3NMMEFCdk5VT25VMlBuVG1oOGVWQnB3Y0VQU21FVzc5SldLM0VNaXVIYUpLT0FNQklIVm9HMHFUa2NNVlFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNTI2NzA2CWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC4xCkczK2h1VkltY0twampGek03ZFU3cTc3bDd1VmVCc1BweGNMY0hNVWFxSXJpc1p6U2dVR0E2Rk1BS1h2RmZUMGxibjVGWDZhK2lDaDRvdm8zUEtZQ0NBPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.2/TwinLink_0.0.2_darwin-x86_64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDZ6OUs0MzVkeEIwaUcrTGJGbGdnaE5MeGc3RUI5SU5IQVRTUVZRUURpeG5yMHRwTXcxdVBzak9remRPS1c3OHFxSjBocmFXa3NkMVR2U2s2eUdKdVFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzIxMjYzCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC4yCmVMZUhLUXJXR3cxcUN4c2FWRlE3aGR6TEVNOUsvQkhhY1l2MklmVTRzRjUvV2VoTzhueW5qcG9IUjZMb3kxbi82ZjNuaFRBNk10VVgrL2JxWWk4bUNnPT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.1/TwinLink_0.0.1_windows-x86_64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDlQcnFIUllVaWNrQitzWVdZRzlIMnlhWDkwRjhqN3V6SDl6dzd4QVdvYmJlN2pVVDJwMXgxWlVsdnord0VyQktlV0s5MUcyUXArcjZUc0ZnVDVYYkFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNTI2MjUxCWZpbGU6VHdpbkxpbmtfMC4wLjFfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMC4xCnZUajNVNXBoOHFXc1dXcTV0UHFNY2JjTFpFM29yNEZYMFJBTzh4Mm4vczNMRVFBOE1MZjQ3M1J5RVRrZE1WM0RzTm5ndDVGV2FWWmxYWXlTZGJ5UkFBPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.2/TwinLink_0.0.2_windows-x86_64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDYxSzZaOWZ4RXB2Q3ljZld6MEVPamc3QmNzZ3NSMmFuOUpFWHFNZGREV0tUNzdKdUNvY0QweDJEVTRMb0hncWhVWEVNMkIvY2ZCQkNtcXUrMXE3MlFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNzIwOTUxCWZpbGU6VHdpbkxpbmtfMC4wLjJfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMC4yCloyZGJUOHpwd0lodGthSHY4VnhGNlUzYVJRWHVsSFJoT1VEVGVtZHdZdFo4dmNlSGhpcWpHM1lveGdESzcrelE2RFlWQisybVlKWkMzWFRmZjYyZkN3PT0K"
     }
   }
 }
