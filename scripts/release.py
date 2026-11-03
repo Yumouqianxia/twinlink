@@ -67,6 +67,17 @@ def gh(*args, data=None, optional=False):
     return json.loads(output) if output.strip().startswith(('{', '[')) else output.strip()
 
 
+def ensure_tag(tag, commit):
+    """Tag only the validated source; never move an existing version tag."""
+    existing = gh('api', f'repos/{REPO}/git/ref/tags/{tag}', optional=True)
+    if existing is not None:
+        resolved = gh('api', f'repos/{REPO}/commits/{tag}')
+        assert resolved['sha'] == commit, 'Existing release tag points to different source; use a new version'
+    else:
+        gh('api', f'repos/{REPO}/git/refs', '--method', 'POST', '--input', '-',
+           data={'ref': 'refs/tags/' + tag, 'sha': commit})
+
+
 def publish():
     value = validate()
     assert os.environ.get('GH_REPO') == REPO, 'Updates are locked to the official repository'
@@ -96,6 +107,9 @@ def publish():
     if old:
         previous = json.loads(base64.b64decode(old['content']))
         assert tuple(map(int, value.split('.'))) >= tuple(map(int, previous['version'].split('.'))), 'Refusing channel downgrade'
+    # Manual releases build the selected commit before creating a public tag.
+    # All platform fragments and installed-startup checks must have passed first.
+    ensure_tag(tag, commit)
     existing = gh('release', 'view', tag, '--repo', REPO, '--json', 'isDraft', optional=True)
     notes = (ROOT / 'docs/RELEASE-NOTES.md').read_text(encoding='utf-8')
     manifest = {'version': value, 'notes': notes, 'platforms': platforms}

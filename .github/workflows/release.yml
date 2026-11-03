@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing version tag, for example v0.0.2'
+        description: 'Version tag to publish from the selected ref, for example v0.0.2'
         required: true
         type: string
 permissions:
@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -48,6 +48,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: python scripts/release.py validate
+      - name: Test release tag protection
+        run: python -m unittest discover -s scripts -p 'test_*.py'
       - run: pnpm install --frozen-lockfile
       - run: python scripts/install_engine.py
         env:
@@ -89,7 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
