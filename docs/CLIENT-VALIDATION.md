@@ -1,5 +1,15 @@
 # 客户端验证记录
 
+## 2026-11-03 Windows 11 实机安装复核与 v0.0.2 发布准备
+
+从公开 `main` 提交 `17f5a24` 拉取源码，在 Windows 11 专业版 x64（10.0.26200、WebView2 156.0.4314.58）复核。使用本机已有 Rust 1.99.1 GNU/MinGW 工具链，显式设置 `-C link-self-contained=yes`；Node 24.22.1、pnpm 11.25.0。首次缺少链接参数导致的编译失败属于本机工具链配置问题，补齐参数后构建通过。
+
+实际完成 `pnpm install --frozen-lockfile`、`pnpm build`、`cargo test -p twinlink-core --locked`（50 passed、1 ignored）、`cargo test -p twinlink --locked`（4 passed）及 `cargo check -p twinlink --locked`。另显式执行官方 EasyTier 参数测试（1 passed），引擎采用官方 2.6.4 Windows x64 包，归档 SHA-256 为 `27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84`。
+
+通过 Tauri CLI 构建 NSIS 包，实际安装到当前用户的 Programs/TwinLink，安装器退出码 0。包中包含 EasyTier、Packet.dll 和 GNU 构建需要的 WebView2Loader.dll。本地测试包只关闭更新签名产物生成，发布包仍由 Actions 使用既有私钥签名。安装前备份已有应用数据；原生界面与设置页正常，显示 v0.0.2 和下载目录，日志出现 `[core-ready]`、`[ready]`、`[frontend-ready]`，确认实际前端已请求 Tauri IPC。正常退出后再次启动，日志再次记录前端就绪，进程持续运行至少 20 秒。
+
+本机未修改用户的 Downloads 注册表位置或损坏用户数据库。异常下载目录与损坏数据库的整包故障注入由发布工作流在一次性 Windows runner 执行，三项检查全部通过才允许发布。此前撤回候选 tag 的记录属于历史；本次按新的发布请求准备 v0.0.2。此次未验证两台不同网络电脑的聊天或文件传输，也未在本机运行 macOS。
+
 ## 2026-11-03 Windows 启动问题调查
 
 对公开 v0.0.1 NSIS 安装包做了实际安装和进程启动测试。GitHub 托管 Windows 2022（NT 10.0.20348，WebView2 131）与 Windows 2025（NT 10.0.26100，WebView2 156）在默认环境下均持续运行 20 秒；这项旧版测试仅判断进程存活，不等同于 GUI 功能全部通过。
