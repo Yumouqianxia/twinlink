@@ -12,6 +12,8 @@ v0.0.2 修正为下载目录解析或创建失败时使用应用数据目录下�
 
 候选版在本机通过 `pnpm build`、`cargo test -p twinlink-core --locked`（51 passed、0 failed、1 ignored）、`cargo test -p twinlink --locked`（4 passed）及 `cargo check -p twinlink --locked`。现有 GitHub 更新元数据仍指向 v0.0.1。
 
+源码提交 `5f3d70c` 的 [Check 工作流](https://github.com/Yumouqianxia/twinlink/actions/runs/41655044992) 首次运行中，macOS 两项信箱文件测试超时，Windows 作业随矩阵失败取消；未改源码重跑后，Windows/macOS 的前端构建、核心和适配层测试、Rust 检查均通过。这不等同于候选安装包的 Windows 实机启动验收。先前触发的 v0.0.2 发布任务已取消，临时 tag 已撤回，没有新 Release。
+
 ## 2026-11-03 macOS 图标尺寸修正
 
 只调整 macOS ICNS 的透明留白。以 1024 px 图层的 alpha ≥128 边界测量，原图可见宽度为 100%，本机 QQ 图标约为 81.05%；修正后的 TwinLink 为 81.25%（四边各留 96 px）。Windows 共用 PNG/ICO 未修改。后续通过 `node scripts/generate-macos-icon.mjs` 从共享 SVG 生成 macOS 图标，避免通用图标生成重新引入满幅底板。
