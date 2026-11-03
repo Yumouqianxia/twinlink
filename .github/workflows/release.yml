@@ -61,6 +61,21 @@ jobs:
         run: pnpm tauri build --ci --bundles ${{ matrix.bundles }}
       - name: Stage platform package
         run: python scripts/release.py stage --platform ${{ matrix.platform }}
+      - name: Windows installed startup regression
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1).FullName
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./scripts/windows-startup-smoke.ps1 -Tag "v$version" -InstallerPath $installer -RequireReady
+          ./scripts/windows-startup-smoke.ps1 -Tag "v$version" -InstallerPath $installer -Scenario blocked-downloads -RequireReady
+          ./scripts/windows-startup-smoke.ps1 -Tag "v$version" -InstallerPath $installer -Scenario corrupt-database -RequireReady
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Windows'
+        with:
+          name: windows-startup-results
+          path: startup-results/
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}

@@ -1,5 +1,21 @@
 # 客户端验证记录
 
+## 2026-11-03 Windows 启动问题调查
+
+对公开 v0.0.1 NSIS 安装包做了实际安装和进程启动测试。GitHub 托管 Windows 2022（NT 10.0.20348，WebView2 131）与 Windows 2025（NT 10.0.26100，WebView2 156）在默认环境下均持续运行 20 秒；这项旧版测试仅判断进程存活，不等同于 GUI 功能全部通过。
+
+在同样的两套隔离环境中，把 Windows 系统 Downloads 已知目录重定向到一个不可用路径，旧版均以 101 退出，stderr 为 `Failed to setup app: error encountered during setup hook: unknown path`。因此确认了一条真实闪退路径：启动回调强制依赖系统下载目录，Tauri 将其解析错误转成主线程 panic。此复现条件不能证明某位用户电脑的闪退一定由相同原因引起。
+
+v0.0.2 修正为下载目录解析或创建失败时使用应用数据目录下的 `received`，不改变既有已保存的下载偏好；其他初始化错误明确显示提示并写本地启动日志，避免无提示退出。日志只写启动阶段、组件版本和初始化错误，不序列化聊天、房间或服务器配置。Windows 默认日志位置为 `%LOCALAPPDATA%\TwinLink\logs\startup.log`，不可写时回退到 `%TEMP%\TwinLink\logs\startup.log`。数据库初始化失败不清空或替换用户数据库。
+
+发布流程增加“安装本次构建的 NSIS 包 → 正常启动 → 异常 Downloads 启动 → 损坏数据库受控退出”检查；正常/回退场景还要求实际前端通过 Tauri IPC 请求快照，不能仅靠进程存活判断成功。测试夹具只允许运行在一次性 GitHub Actions runner，目录重定向在结束时恢复。最终实际执行结果在构建完成后补充。
+
+## 2026-11-03 macOS 图标尺寸修正
+
+只调整 macOS ICNS 的透明留白。以 1024 px 图层的 alpha ≥128 边界测量，原图可见宽度为 100%，本机 QQ 图标约为 81.05%；修正后的 TwinLink 为 81.25%（四边各留 96 px）。Windows 共用 PNG/ICO 未修改。后续通过 `node scripts/generate-macos-icon.mjs` 从共享 SVG 生成 macOS 图标，避免通用图标生成重新引入满幅底板。
+
+本机已备份旧应用、替换 ICNS、重新进行 ad-hoc 签名并刷新系统图标登记；`codesign --verify --deep --strict` 通过，原生应用重新启动成功。`pnpm build`、`cargo test -p twinlink-core --locked`（51 passed、0 failed、1 ignored）、`cargo check -p twinlink --locked` 均通过。启动台的系统窗口未能通过自动化工具读取，因此不把图标边界测量描述成启动台截图对比验收。本次未发布新的 GitHub Release，也未改写既有 v0.0.1 下载包。
+
 最终收尾日期：2026-11-01。本记录区分模拟界面回归、同机双进程和真实服务器验收；不代表两台不同网络的电脑已经联调。
 
 ## 环境和构建

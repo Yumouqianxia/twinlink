@@ -13,6 +13,7 @@ use twinlink_core::{
 use uuid::Uuid;
 
 mod updates;
+mod startup;
 
 struct AppState(Arc<Core>);
 type Reply<T> = std::result::Result<T, String>;
@@ -23,6 +24,10 @@ fn error(e: impl std::fmt::Display) -> String {
 
 #[tauri::command]
 async fn snapshot(state: State<'_, AppState>) -> Reply<Snapshot> {
+    static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    if FIRST.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        startup::record("frontend-ready", "first snapshot requested via IPC");
+    }
     state.0.snapshot().await.map_err(error)
 }
 
@@ -119,15 +124,18 @@ async fn message_history(
 }
 
 fn main() {
-    tauri::Builder::default()
+    startup::initialize();
+    startup::record("webview-runtime", &tauri::webview_version().unwrap_or_else(|_| "unavailable".into()));
+    let application = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Updates::default())
         .setup(|app| {
+            let initialized: Result<(), Box<dyn std::error::Error>> = (|| {
+            startup::record("setup", "resolving application paths");
             let paths = app.path();
             let data = paths.app_data_dir()?;
-            let downloads = paths.download_dir()?.join("TwinLink");
-            std::fs::create_dir_all(&downloads)?;
+            let downloads = startup::downloads(paths.download_dir().ok().map(|p| p.join("TwinLink")), &data)?;
             let mut engine = engine_path(&paths.resource_dir()?);
             // In `tauri dev` the bundled resource path does not exist yet, so the
             // source-tree engine directory is used instead.
@@ -137,7 +145,9 @@ fn main() {
                     engine = dev_engine;
                 }
             }
+            startup::record("core-open", "opening local database and saved state");
             let core = Core::open(data, downloads, engine)?;
+            startup::record("core-ready", "local storage initialized");
             let mut events = core.subscribe();
             let handle = app.handle().clone();
             let resync = core.clone();
@@ -161,6 +171,14 @@ fn main() {
             tauri::async_runtime::spawn(async move { runner.run().await });
             app.manage(AppState(core));
             Ok(())
+            })();
+            if let Err(error) = initialized {
+                startup::record("setup-error", &error.to_string());
+                startup::show_error(&error.to_string());
+                // Tauri otherwise turns a setup error into an unhandled panic.
+                std::process::exit(1);
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
@@ -181,12 +199,23 @@ fn main() {
             updates::check_update,
             updates::install_update
         ])
-        .build(tauri::generate_context!())
-        .expect("无法启动 TwinLink")
-        .run(|app, event| {
+        .build(tauri::generate_context!());
+    let application = match application {
+        Ok(application) => application,
+        Err(error) => {
+            startup::record("startup-error", &error.to_string());
+            startup::show_error(&error.to_string());
+            std::process::exit(1);
+        }
+    };
+    application.run(|app, event| {
+            if let tauri::RunEvent::Ready = event { startup::record("ready", "application event loop ready"); }
             if let tauri::RunEvent::Exit = event {
-                let core = app.state::<AppState>().0.clone();
-                tauri::async_runtime::block_on(async move { core.shutdown().await });
+                startup::record("exit", "application event loop exiting");
+                if let Some(state) = app.try_state::<AppState>() {
+                    let core = state.0.clone();
+                    tauri::async_runtime::block_on(async move { core.shutdown().await });
+                }
             }
         });
 }

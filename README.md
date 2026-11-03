@@ -1,8 +1,8 @@
 # 同频 / TwinLink
 
-当前版本：**v0.0.1 · 预发布版（非正式版）**。
+当前版本：**v0.0.2 · 预发布版（非正式版）**。
 
-[下载预发布版](https://github.com/Yumouqianxia/twinlink/releases/tag/v0.0.1) · [更新与发布说明](docs/UPDATES.md)
+[下载预发布版](https://github.com/Yumouqianxia/twinlink/releases/tag/v0.0.2) · [更新与发布说明](docs/UPDATES.md)
 
 两个人使用的 Windows/macOS 桌面聊天与文件传输应用原型。采用 Tauri 2、
 TypeScript/Vite、Rust 和独立分发的 EasyTier 2.6.4。EasyTier 负责网络发现、
