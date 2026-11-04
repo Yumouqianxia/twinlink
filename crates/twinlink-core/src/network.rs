@@ -89,6 +89,9 @@ pub fn spawn_engine(binary: &Path, state_dir: &Path, spec: &RoomSpec) -> Result<
         .arg("--ipv4")
         .arg(&spec.virtual_ip)
         .args(["--no-tun", "true", "--use-smoltcp", "true"])
+        // The realtime channel must never silently relay file bytes. If hole
+        // punching fails, encrypted HTTPS mailbox delivery remains available.
+        .args(["--p2p-only", "true"])
         .arg("--peers")
         .arg(&spec.stored.server.relay_url)
         .args(["--listeners", "udp://0.0.0.0:0"])

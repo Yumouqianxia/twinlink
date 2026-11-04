@@ -78,6 +78,16 @@ async fn save_profile(state: State<'_, AppState>, profile: Profile) -> Reply<()>
 }
 
 #[tauri::command]
+async fn export_data(state: State<'_, AppState>, path: String) -> Reply<()> {
+    state.0.export_data(PathBuf::from(path)).await.map_err(error)
+}
+
+#[tauri::command]
+async fn import_data(state: State<'_, AppState>, path: String) -> Reply<twinlink_core::backup::ImportReport> {
+    state.0.import_data(PathBuf::from(path)).await.map_err(error)
+}
+
+#[tauri::command]
 async fn send_message(state: State<'_, AppState>, text: String) -> Reply<Message> {
     state.0.send_message(text).await.map_err(error)
 }
@@ -190,6 +200,8 @@ fn main() {
             resume_peer,
             forget_room,
             save_profile,
+            export_data,
+            import_data,
             send_message,
             offer_file,
             accept_file,

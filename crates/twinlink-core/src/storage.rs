@@ -484,7 +484,9 @@ impl Store {
             )
             .optional()?;
         let Some(status) = status else { return Ok(false) };
-        if status != "waiting" {
+        // A valid completion can overtake the reconnect fallback upload. It
+        // must win over pending/uploading, but never over terminal failures.
+        if !["waiting", "directFinishing", "pending", "uploading"].contains(&status.as_str()) {
             return Ok(false);
         }
         tx.execute(
@@ -650,6 +652,106 @@ impl Store {
         tx.commit()?;
         Ok(true)
     }
+    pub fn backup_records(&self) -> Result<(Vec<crate::backup::MessageRecord>, Vec<crate::backup::TransferRecord>)> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        let size: u64 = tx.query_row("SELECT COALESCE((SELECT SUM(length(value)) FROM messages),0) + COALESCE((SELECT SUM(length(value)) FROM transfers),0)", [], |r| r.get(0))?;
+        anyhow::ensure!(size <= crate::backup::MAX_BACKUP_BYTES / 2, "记录过多，超过当前备份容量");
+        let mut messages = Vec::new();
+        {
+            let mut statement = tx.prepare("SELECT room,value FROM messages ORDER BY timestamp,rowid")?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (room, value) = row?;
+                messages.push(crate::backup::MessageRecord { room, message: serde_json::from_str(&value)? });
+            }
+        }
+        let mut transfers = Vec::new();
+        {
+            let mut statement = tx.prepare("SELECT room,value FROM transfers ORDER BY rowid")?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (room, value) = row?;
+                transfers.push(crate::backup::TransferRecord { room, transfer: serde_json::from_str(&value)? });
+            }
+        }
+        tx.commit()?;
+        Ok((messages, transfers))
+    }
+
+    pub fn import_records(&self, messages: &[crate::backup::MessageRecord], transfers: &[crate::backup::TransferRecord], profile: &Profile, history: &str) -> Result<(usize, usize)> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        let (mut messages_added, mut transfers_added) = (0, 0);
+        for row in messages {
+            messages_added += tx.execute("INSERT OR IGNORE INTO messages(room,id,timestamp,value) VALUES(?1,?2,?3,?4)",
+                params![row.room, row.message.id, row.message.timestamp, serde_json::to_string(&row.message)?])?;
+        }
+        for row in transfers {
+            transfers_added += tx.execute("INSERT OR IGNORE INTO transfers(room,id,value) VALUES(?1,?2,?3)",
+                params![row.room, row.transfer.id, serde_json::to_string(&row.transfer)?])?;
+        }
+        tx.execute("INSERT INTO settings(key,value) VALUES('profile',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(profile)?])?;
+        if !history.is_empty() {
+            tx.execute("INSERT INTO settings(key,value) VALUES('history_room',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [history])?;
+        }
+        tx.commit()?;
+        Ok((messages_added, transfers_added))
+    }
+
+    pub fn recover_all_direct(&self) -> Result<()> {
+        let rooms = {
+            let conn = self.0.lock().unwrap();
+            let mut statement = conn.prepare("SELECT DISTINCT room FROM uploads UNION SELECT DISTINCT room FROM downloads")?;
+            let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for room in rooms { self.recover_direct(&room)?; }
+        Ok(())
+    }
+
+    pub fn recover_direct(&self, room: &str) -> Result<()> {
+        for row in self.uploads(room)? {
+            if !["directWaiting", "directSending", "directFinishing"].contains(&row.status.as_str()) { continue; }
+            let mut transfer = self.transfer(room, &row.file_id)?.ok_or_else(|| anyhow::anyhow!("文件记录缺失"))?;
+            let (status, error) = if row.size <= crate::files::MAX_FILE_SIZE {
+                transfer.via = Some("mailbox".into());
+                transfer.status = "preparing".into();
+                ("pending", None)
+            } else {
+                transfer.status = "failed".into();
+                ("failed", Some("直连已断开；文件超过离线信箱 1 GiB 上限，请在双方直连后重新发送"))
+            };
+            transfer.transferred = 0;
+            transfer.error = error.map(str::to_owned);
+            let mut conn = self.0.lock().unwrap();
+            let tx = conn.transaction()?;
+            tx.execute("UPDATE uploads SET status=?3,error=?4,encrypted_size=?5,chunk_count=?6 WHERE room=?1 AND file_id=?2",
+                params![room, row.file_id, status, error,
+                    if row.size <= crate::files::MAX_FILE_SIZE { crate::crypto::encrypted_size(row.size)? } else { 0 },
+                    if row.size <= crate::files::MAX_FILE_SIZE { crate::crypto::chunk_count(row.size)? } else { 0 }])?;
+            save_transfer_tx(&tx, room, &transfer)?;
+            tx.commit()?;
+        }
+        for row in self.downloads(room)? {
+            if !["directOffered", "directReceiving"].contains(&row.status.as_str()) { continue; }
+            let mut transfer = self.transfer(room, &row.file_id)?.ok_or_else(|| anyhow::anyhow!("文件记录缺失"))?;
+            let (status, error) = if row.size <= crate::files::MAX_FILE_SIZE {
+                transfer.status = "waiting".into();
+                ("directInterrupted", "直连已断开，等待对方的服务器暂存副本")
+            } else {
+                transfer.status = "failed".into();
+                ("failed", "直连已断开；此文件超过离线信箱上限，请让对方在直连后重发")
+            };
+            transfer.transferred = 0;
+            transfer.error = Some(error.into());
+            self.set_download(room, &row.file_id, status, row.target_dir.as_deref(), None, 0, Some(error))?;
+            self.save_transfer(room, &transfer)?;
+            if let Some(temp) = row.temp_path { let _ = std::fs::remove_file(temp); }
+        }
+        Ok(())
+    }
+
 }
 
 #[derive(Clone, Debug)]

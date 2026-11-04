@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Local main window and user-initiated native dialogs",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
 }

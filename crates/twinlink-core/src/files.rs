@@ -6,6 +6,16 @@ use tokio::io::AsyncReadExt;
 pub const CHUNK_SIZE: usize = 64 * 1024;
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024; // Matches the private mailbox's 1 GiB cap.
 
+pub fn destination(directory: &Path, name: &str, index: u32) -> std::path::PathBuf {
+    if index == 0 { return directory.join(name); }
+    let path = Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    match path.extension().and_then(|s| s.to_str()) {
+        Some(extension) => directory.join(format!("{stem} ({index}).{extension}")),
+        None => directory.join(format!("{stem} ({index})")),
+    }
+}
+
 pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > 240 || name.trim() != name
         || name.ends_with('.') || name.chars().any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
@@ -22,7 +32,7 @@ pub fn validate_name(name: &str) -> Result<()> {
 pub async fn hash_file(path: &Path) -> Result<(u64, String)> {
     let mut file = tokio::fs::File::open(path).await?;
     let metadata = file.metadata().await?;
-    if !metadata.is_file() || metadata.len() > MAX_FILE_SIZE { bail!("请选择不超过 1 GiB 的普通文件"); }
+    if !metadata.is_file() { bail!("请选择普通文件"); }
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; CHUNK_SIZE];
     let mut size = 0u64;
@@ -30,9 +40,10 @@ pub async fn hash_file(path: &Path) -> Result<(u64, String)> {
         let read = file.read(&mut buffer).await?;
         if read == 0 { break; }
         hash.update(&buffer[..read]);
-        size += read as u64;
-        if size > MAX_FILE_SIZE { bail!("文件过大"); }
+        size = size.checked_add(read as u64).ok_or_else(|| anyhow::anyhow!("文件长度无效"))?;
+        if size > metadata.len() { bail!("读取期间源文件已改变，请重新选择发送"); }
     }
+    if size != metadata.len() { bail!("读取期间源文件已改变，请重新选择发送"); }
     Ok((size, hex::encode(hash.finalize())))
 }
 

@@ -2059,3 +2059,8 @@ progress::-moz-progress-bar {
 .update-notes { white-space: pre-wrap; max-height: 140px; overflow-y: auto; overflow-wrap: anywhere; }
 #update-progress { display: block; width: 100%; height: 6px; margin: 12px 0; accent-color: var(--accent); }
 #update-progress[hidden] { display: none; }
+
+/* Native file drop feedback; it never consumes the pointer or file contents. */
+.file-drop-hint { position: fixed; inset: 18px; z-index: 90; display: grid; place-items: center; border: 2px dashed var(--accent, #2563eb); border-radius: 18px; background: rgba(245, 248, 255, .95); color: #2563eb; font-size: 22px; font-weight: 600; pointer-events: none; }
+.file-drop-hint[hidden] { display: none; }
+.auto-receive-field input { accent-color: #2563eb; margin-right: 8px; }

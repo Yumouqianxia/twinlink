@@ -10,6 +10,8 @@ pub fn now() -> u64 {
 pub struct Profile {
     pub display_name: String,
     pub download_dir: String,
+    #[serde(default)]
+    pub auto_accept_files: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +55,8 @@ pub struct Transfer {
     pub transferred: u64,
     pub outgoing: bool,
     pub status: String,
+    #[serde(default)]
+    pub via: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -94,8 +98,8 @@ pub struct Snapshot {
     pub server: Option<crate::pairing::ServerSummary>,
     /// Selected room and its derived addresses. Never contains the seed.
     pub room: Option<RoomInfo>,
-    /// Direct/relay is only real with an EasyTier RPC/CLI answer; until that is
-    /// wired up the truthful value is "unknown" and the UI must not guess.
+    /// `direct` only while the authenticated channel is live under the
+    /// enforced EasyTier --p2p-only setting; otherwise `unknown`.
     pub route: String,
     /// Offline mailbox reachability, deliberately separate from peer
     /// reachability. Server availability is not evidence the peer is online.

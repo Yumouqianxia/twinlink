@@ -74,7 +74,7 @@ const motif = (mode: 'disconnected' | 'connecting' | 'connected') =>
 /* ---------- state ---------- */
 
 let state: Snapshot = {
-  profile: { displayName: '我的电脑', downloadDir: '' },
+  profile: { displayName: '我的电脑', downloadDir: '', autoAcceptFiles: false },
   connection: 'disconnected',
   peerName: null,
   messages: [],
@@ -181,7 +181,7 @@ $('#app').innerHTML = `
           </div>
         </form>
         <p class="composer-note">
-          <span>${icon('shield')}文件先加密暂存到服务器，对方接受后保存到他的电脑</span>
+          <span>${icon('shield')}直连在线时先询问接收，文件通过 P2P 传输；离线时加密暂存</span>
           <button type="button" class="link-btn show-files">查看文件传输</button>
         </p>
       </div></div>
@@ -191,7 +191,7 @@ $('#app').innerHTML = `
         <div class="files-head">
           <div>
             <h2>文件传输</h2>
-            <p>文件先加密暂存到服务器，对方接受后才保存到对方电脑。同名自动改名，不覆盖已有文件；服务器保留 7 天，最多 1 GiB。</p>
+            <p>直连在线时，接受后通过 P2P 传输，无应用文件大小限制；无法直连时加密暂存服务器，保留 7 天、单文件最多 1 GiB。同名自动改名。</p>
           </div>
           <button type="button" class="btn primary choose-file" disabled>${icon('plus')}发送文件</button>
         </div>
@@ -200,7 +200,7 @@ $('#app').innerHTML = `
           <div class="files-empty-inner">
             <div class="files-empty-icon" aria-hidden="true">${icon('folder')}</div>
             <h3 class="files-empty-title">还没有传输文件</h3>
-            <p class="files-empty-copy">选择一个文件发送。文件会先加密暂存到服务器，对方接受后才保存到他的电脑。</p>
+            <p class="files-empty-copy">选择或拖入文件发送。直连在线时先询问接收，离线时加密暂存服务器。</p>
           </div>
         </div>
         <div class="files-foot">
@@ -286,7 +286,7 @@ $('#app').innerHTML = `
       <dt>离线信箱</dt><dd id="room-mailbox">—</dd>
       <dt>服务器</dt><dd id="room-server" class="mono"></dd>
     </dl>
-    <p class="field-hint">本机与对方的虚拟地址根据房间密钥自动分配，无需手动填写。直连或中继状态需要 EasyTier 状态接口，当前显示为未知。</p>
+    <p class="field-hint">本机与对方的虚拟地址根据房间密钥自动分配，无需手动填写。实时通道仅允许 P2P 直连；无法直连时使用离线信箱，不中继文件字节。</p>
     <div class="room-key-block" hidden>
       <button type="button" class="btn quiet copy-key">${icon('copy')}复制配对码</button>
       <span class="field-hint">重新复制本房间的配对码，分享给要加入的伙伴。</span>
@@ -323,6 +323,23 @@ $('#app').innerHTML = `
       </span>
       <span class="field-hint">同名文件自动改名，不会覆盖已有文件。</span>
     </label>
+
+    <label class="field auto-receive-field">
+      <span><input type="checkbox" name="autoAcceptFiles" /> 自动接收当前房间的文件</span>
+      <span class="field-hint">默认关闭，更换房间后关闭。开启后，新文件请求会直接接收并保存到上方目录；不会自动打开或执行文件。</span>
+    </label>
+
+    <section class="dialog-section" aria-labelledby="backup-heading">
+      <h3 id="backup-heading">数据导入与导出</h3>
+      <p class="field-hint">备份包含全部聊天记录、传输记录和房间／服务器凭据，未加密，请妥善保存。附件本体及未完成的发送队列不包含在内。</p>
+      <p class="field-hint">导入会合并记录、保留本机已有房间和保存目录，暂停连接并关闭自动接收；空白设备可恢复备份中的房间。</p>
+      <div class="copy-row">
+        <button type="button" class="btn quiet" id="export-data">导出备份</button>
+        <button type="button" class="btn quiet" id="import-data">选择备份导入</button>
+        <button type="button" class="btn quiet" id="cancel-import" hidden>取消导入</button>
+      </div>
+      <p class="field-hint" id="backup-status" role="status" aria-live="polite"></p>
+    </section>
 
     <section class="dialog-section" aria-labelledby="server-heading">
       <h3 id="server-heading">联机服务器</h3>
@@ -371,6 +388,7 @@ $('#app').innerHTML = `
   </form>
 </dialog>
 
+<div id="file-drop-hint" class="file-drop-hint" hidden>松开发送所选文件</div>
 <div class="toast" role="status" aria-live="polite" hidden></div>`;
 
 /* ---------- rendering ---------- */
@@ -571,7 +589,8 @@ async function loadEarlier() {
 
 const statusLabels: Record<Transfer['status'], string> = {
   preparing: '准备中',
-  uploading: '上传中',
+  uploading: '离线暂存上传中',
+  sending: 'P2P 发送中',
   waiting: '等待对方接收',
   offered: '等待你接收',
   accepted: '已接受',
@@ -586,6 +605,7 @@ const statusLabels: Record<Transfer['status'], string> = {
 const ACTIVE_STATUSES: Transfer['status'][] = [
   'preparing',
   'uploading',
+  'sending',
   'waiting',
   'offered',
   'accepted',
@@ -595,6 +615,7 @@ const ACTIVE_STATUSES: Transfer['status'][] = [
 const SHOW_PROGRESS: Transfer['status'][] = [
   'preparing',
   'uploading',
+  'sending',
   'accepted',
   'downloading',
   'publishing',
@@ -616,8 +637,8 @@ function transferMarkup(transfer: Transfer): string {
    * peer. Uploads can be cancelled while fully staged (`waiting`). */
   const incoming = !transfer.outgoing;
   const canCancel = transfer.outgoing
-    ? ['preparing', 'uploading', 'waiting'].includes(transfer.status)
-    : ['accepted', 'downloading', 'publishing'].includes(transfer.status);
+    ? ['preparing', 'uploading', 'sending', 'waiting'].includes(transfer.status)
+    : ['accepted', 'downloading', 'waiting'].includes(transfer.status);
   const canReject = incoming && transfer.status === 'offered';
   const actions = [
     canReject
@@ -642,7 +663,7 @@ function transferMarkup(transfer: Transfer): string {
     transfer.status === 'offered' && incoming
       ? '<p class="transfer-hint">只有你点“接收”后才会保存到本机；拒收不会下载这个文件。</p>'
       : transfer.status === 'failed' && transfer.outgoing
-      ? '<p class="transfer-hint">文件未能完成暂存。请重新选择这个文件发送。</p>'
+      ? '<p class="transfer-hint">文件未能完成发送。请重新选择这个文件发送。</p>'
       : transfer.status === 'failed' && incoming
         ? '<p class="transfer-hint">文件未能接收完成。请让对方重新发送，或再次接收。</p>'
         : '';
@@ -654,6 +675,7 @@ function transferMarkup(transfer: Transfer): string {
       <p class="transfer-meta">
         <span>${transfer.outgoing ? '你发送' : '对方发送'}</span>
         <span>${bytes(transfer.size)}</span>
+        <span>${transfer.via === 'direct' ? 'P2P 直连' : '离线暂存'}</span>
         <span class="chip" data-tone="${tone}">${statusLabels[transfer.status] ?? transfer.status}${
           SHOW_PROGRESS.includes(transfer.status) ? ` ${percent}%` : ''
         }</span>
@@ -684,7 +706,7 @@ function renderTransfers() {
     const readyToSend = !!state.room;
     $('.files-empty-title').textContent = readyToSend ? '还没有传输文件' : '配对后才能传输文件';
     $('.files-empty-copy').textContent = readyToSend
-      ? '选择一个文件发送。文件会先加密暂存到服务器，对方接受后才保存到他的电脑。'
+      ? '选择或拖入文件发送。直连在线时先询问接收，离线时加密暂存服务器。'
       : '先创建或加入一个房间，就可以把文件加密暂存到服务器，等对方收取。';
     return;
   }
@@ -918,7 +940,7 @@ function renderRoomDialog() {
   $('#room-ip').textContent = room.virtualIp;
   $('#room-peer-ip').textContent = room.peerVirtualIp;
   $('#room-route').textContent =
-    state.route === 'direct' ? '直连' : state.route === 'relay' ? '中继' : '未知（尚未接入 EasyTier 状态接口）';
+    state.connection === 'connected' && state.route === 'direct' ? 'P2P 直连' : '尚无已验证的直连';
   $('#room-server').textContent = state.server
     ? `${state.server.relayUrl} · 信箱 ${state.server.mailboxHost}`
     : '尚未导入服务器设置码';
@@ -1005,6 +1027,7 @@ function applyEvent(event: AppEvent) {
   if (event.type === 'state') {
     const previousRoom = state.room?.roomId ?? null;
     state.connection = event.connection;
+    state.route = event.connection === 'connected' ? 'direct' : 'unknown';
     state.peerName = event.peerName;
     state.paused = event.paused;
     state.reconnect = event.reconnect;
@@ -1025,7 +1048,9 @@ function applyEvent(event: AppEvent) {
     mergeTransfer(event.transfer);
     renderTransfers();
     if (isNew && !event.transfer.outgoing && event.transfer.status === 'offered') {
-      toast(`收到文件请求：${event.transfer.name}，请在文件传输中确认。`);
+      toast(state.profile.autoAcceptFiles
+        ? `收到文件请求：${event.transfer.name}，已按设置自动接收。`
+        : `收到文件请求：${event.transfer.name}，请在文件传输中确认。`);
     }
   } else if (event.type === 'mailbox') {
     state.mailbox = { state: event.state, message: event.message, pending: event.pending };
@@ -1072,6 +1097,8 @@ function openRoom() {
 function openSettings() {
   $<HTMLInputElement>('#settings-form [name="displayName"]').value = state.profile.displayName;
   $<HTMLInputElement>('#settings-form [name="downloadDir"]').value = state.profile.downloadDir;
+  $<HTMLInputElement>('#settings-form [name="autoAcceptFiles"]').checked = state.profile.autoAcceptFiles ?? false;
+  resetImport();
   $<HTMLTextAreaElement>('#server-code').value = '';
   $('#server-error').textContent = '';
   renderServerSettings();
@@ -1395,6 +1422,7 @@ $<HTMLFormElement>('#settings-form').addEventListener('submit', async event => {
   const profile = {
     displayName: name.value.trim(),
     downloadDir: form.querySelector<HTMLInputElement>('[name="downloadDir"]')!.value,
+    autoAcceptFiles: form.querySelector<HTMLInputElement>('[name="autoAcceptFiles"]')!.checked,
   };
   error.textContent = '';
   if (!profile.displayName) {
@@ -1419,6 +1447,52 @@ $<HTMLFormElement>('#settings-form').addEventListener('submit', async event => {
   } finally {
     submit.disabled = false;
   }
+});
+
+/* ---------- local backups ---------- */
+let pendingImport: string | null = null;
+let backupBusy = false;
+function resetImport() {
+  pendingImport = null;
+  $('#import-data').textContent = '选择备份导入';
+  $('#cancel-import').hidden = true;
+  $('#backup-status').textContent = '';
+}
+$('#cancel-import').addEventListener('click', resetImport);
+$('#export-data').addEventListener('click', async () => {
+  if (backupBusy) return;
+  backupBusy = true;
+  try {
+    const path = await api.chooseExport();
+    if (!path) return;
+    $('#backup-status').textContent = '正在导出备份…';
+    await api.exportData(path);
+    $('#backup-status').textContent = '备份已保存，包含房间凭据，请妥善保管。';
+  } catch (error) { $('#backup-status').textContent = String(error); }
+  finally { backupBusy = false; }
+});
+$('#import-data').addEventListener('click', async () => {
+  if (backupBusy) return;
+  backupBusy = true;
+  try {
+    if (!pendingImport) {
+      pendingImport = await api.chooseBackup();
+      if (!pendingImport) return;
+      $('#import-data').textContent = '确认导入并暂停连接';
+      $('#cancel-import').hidden = false;
+      $('#backup-status').textContent = '已选择备份。确认后合并记录，不覆盖现有记录或附件；连接将暂停，需手动恢复。';
+      return;
+    }
+    if (state.room) await api.pause();
+    const report = await api.importData(pendingImport);
+    pendingImport = null;
+    adoptSnapshot(await api.snapshot());
+    openSettings();
+    $('#backup-status').textContent = `导入完成：新增 ${report.messagesAdded} 条聊天、${report.transfersAdded} 条文件记录。自动接收已关闭；需要联机时请手动恢复连接。`;
+  } catch (error) {
+    $('#backup-status').textContent = String(error);
+    try { adoptSnapshot(await api.snapshot()); } catch { /* Keep the original import error visible. */ }
+  } finally { backupBusy = false; }
 });
 
 /* ---------- messaging ---------- */
@@ -1471,28 +1545,46 @@ input.addEventListener('keydown', event => {
 
 /* ---------- files ---------- */
 
-async function chooseFile() {
-  if (preparing) return;
+async function sendSelectedFiles(paths: string[]) {
+  if (preparing) { toast('正在处理已选择的文件，请稍后再拖入。'); return; }
+  if (!state.room || state.preview) { toast('请先在桌面应用中创建或加入房间。'); return; }
+  preparing = true;
+  renderComposer();
   try {
-    const path = await api.chooseFile();
-    if (!path) return;
-    preparing = true;
-    renderComposer();
-    toast('正在读取文件并计算校验值…');
-    mergeTransfer(await api.offerFile(path));
-    renderTransfers();
-    showPage('files');
-    toast('文件已加入发送队列：先加密上传到服务器，等待对方接收。');
-  } catch (error) {
-    toast(String(error));
+    for (const path of [...new Set(paths)]) {
+      try {
+        toast('正在读取所选文件并计算校验值…');
+        const transfer = await api.offerFile(path);
+        mergeTransfer(transfer);
+        renderTransfers();
+        showPage('files');
+        toast(transfer.via === 'direct'
+          ? '已发送 P2P 文件邀请，等待对方接收。'
+          : '无法直连，文件已加入加密离线暂存队列。');
+      } catch (error) { toast(String(error)); }
+    }
   } finally {
     preparing = false;
     renderComposer();
   }
 }
 
+async function chooseFile() {
+  if (preparing) return;
+  try {
+    const path = await api.chooseFile();
+    if (path) await sendSelectedFiles([path]);
+  } catch (error) { toast(String(error)); }
+}
+
 $('.attach-button').addEventListener('click', chooseFile);
 $('.choose-file').addEventListener('click', chooseFile);
+// Browser File objects are never converted to guessed paths or fake uploads.
+document.addEventListener('dragover', event => event.preventDefault());
+document.addEventListener('drop', event => {
+  event.preventDefault();
+  if (state.preview) toast('拖拽发送文件需要使用桌面应用。');
+});
 
 $('.transfers').addEventListener('click', async event => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button');
@@ -1518,6 +1610,15 @@ async function initialize() {
     await api.subscribe(applyEvent);
     await api.onResync(snapshot => adoptSnapshot(snapshot));
     state = await api.snapshot();
+    await api.onFileDrop(event => {
+      const allowed = !!state.room && !state.preview && !document.querySelector('dialog[open]');
+      $('#file-drop-hint').hidden = !allowed || (event.type !== 'enter' && event.type !== 'over');
+      if (event.type === 'drop') {
+        $('#file-drop-hint').hidden = true;
+        if (allowed) void sendSelectedFiles(event.paths);
+        else if (!document.querySelector('dialog[open]')) toast('请先创建或加入房间再拖入文件。');
+      }
+    });
     ready = true;
     for (const event of pending.splice(0)) applyEvent(event);
     renderAll();

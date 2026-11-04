@@ -1,10 +1,12 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
+import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 
 export interface Profile {
   displayName: string;
   downloadDir: string;
+  autoAcceptFiles: boolean;
 }
 /**
  * `delivery` describes how far an outgoing message has actually got:
@@ -31,15 +33,18 @@ export interface Transfer {
   outgoing: boolean;
   status: TransferStatus;
   error?: string | null;
+  via?: 'direct' | 'mailbox' | null;
 }
 /**
- * Outgoing upload: `preparing` → `uploading` → `waiting` (fully staged on the
- * server, waiting for the peer to accept) → `completed`.
+ * Direct outgoing: `waiting` (consent) → `sending` → `waiting` (receipt) →
+ * `completed`. Offline outgoing: `preparing` → `uploading` → `waiting` →
+ * `completed`. `via` identifies the transport; progress is never proof of receipt.
  * Incoming download: `offered` → `accepted` → `downloading` → `publishing`
  * (atomic write into the download dir) → `completed`.
  * Any of these can end in `rejected`, `cancelled` or `failed`.
  */
 export type TransferStatus =
+  | 'sending'
   | 'preparing'
   | 'uploading'
   | 'waiting'
@@ -94,7 +99,7 @@ export interface Snapshot {
   reconnect: ReconnectStatus | null;
   server: ServerSummary | null;
   room: RoomInfo | null;
-  /** "unknown" until real EasyTier RPC/CLI route data exists. */
+  /** `direct` only with an authenticated channel under EasyTier --p2p-only. */
   route: string;
   /** Offline mailbox reachability; separate from peer reachability. */
   mailbox: MailboxInfo;
@@ -123,7 +128,7 @@ export type AppEvent =
   | { type: 'error'; message: string };
 
 const previewSnapshot: Snapshot = {
-  profile: { displayName: '我的电脑', downloadDir: '' },
+  profile: { displayName: '我的电脑', downloadDir: '', autoAcceptFiles: false },
   connection: 'disconnected',
   peerName: null,
   messages: [],
@@ -178,6 +183,21 @@ export const api = {
   rejectFile: (id: string) => native<void>('reject_file', { id }),
   cancelTransfer: (id: string) => native<void>('cancel_transfer', { id }),
   saveProfile: (profile: Profile) => native<void>('save_profile', { profile }),
+  exportData: (path: string) => native<void>('export_data', { path }),
+  importData: (path: string) => native<{ messagesAdded: number; transfersAdded: number; restoredConnection: boolean }>('import_data', { path }),
+  chooseBackup: async (): Promise<string | null> => {
+    if (!isTauri()) throw new Error('请在桌面应用中导入备份。');
+    const path = await open({ multiple: false, directory: false, filters: [{ name: 'TwinLink 备份', extensions: ['json'] }] });
+    return typeof path === 'string' ? path : null;
+  },
+  chooseExport: async (): Promise<string | null> => {
+    if (!isTauri()) throw new Error('请在桌面应用中导出备份。');
+    return save({ defaultPath: `TwinLink-${new Date().toISOString().slice(0, 10)}-${Date.now()}.twinlink-backup.json`, filters: [{ name: 'TwinLink 备份', extensions: ['json'] }] });
+  },
+  onFileDrop: async (handler: (event: DragDropEvent) => void): Promise<() => void> => {
+    if (!isTauri()) return () => {};
+    return getCurrentWebview().onDragDropEvent(event => handler(event.payload));
+  },
 
   /** One page of older messages, strictly before `beforeId` (null = newest). */
   history: (beforeId: string | null): Promise<HistoryPage> =>

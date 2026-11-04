@@ -2,6 +2,8 @@ pub mod crypto;
 pub mod files;
 pub mod mailbox;
 mod mailbox_service;
+mod direct_files;
+pub mod backup;
 pub mod model;
 pub mod network;
 pub mod pairing;
@@ -116,6 +118,7 @@ pub struct Core {
     shutdown: CancellationToken,
     policy: Policy,
     mailbox_wake: tokio::sync::Notify,
+    direct: Mutex<direct_files::DirectState>,
     /// Test-only transport override so the durable mailbox can run against an
     /// in-process server without real TLS. Production always builds its own.
     #[cfg(test)]
@@ -151,9 +154,11 @@ impl Core {
         // starting; load() quarantines it and returns defaults.
         let saved = state_file.load().unwrap_or_default();
         let store = storage::Store::open(&data_dir.join("twinlink.db"))?;
+        store.recover_all_direct()?;
         let profile = store.profile(Profile {
             display_name: default_name(),
             download_dir: download_dir.to_string_lossy().into_owned(),
+            auto_accept_files: false,
         })?;
         let history_room = saved
             .room
@@ -192,6 +197,7 @@ impl Core {
             shutdown: CancellationToken::new(),
             policy,
             mailbox_wake: tokio::sync::Notify::new(),
+            direct: Mutex::new(direct_files::DirectState::default()),
             #[cfg(test)]
             transport: StdMutex::new(None),
         }))
@@ -274,9 +280,9 @@ impl Core {
             reconnect: inner.reconnect.clone(),
             server,
             room,
-            // EasyTier RPC route inspection is not wired up yet; claiming
-            // "direct" or "relay" from chat liveness would be a fabrication.
-            route: "unknown".into(),
+            // The engine enforces --p2p-only; an authenticated live channel
+            // cannot silently carry file payloads through the relay.
+            route: if inner.sender.is_some() { "direct" } else { "unknown" }.into(),
             mailbox: model::MailboxInfo {
                 state: inner.mailbox_state.clone(),
                 message: inner.mailbox_error.clone(),
@@ -364,6 +370,15 @@ impl Core {
     async fn install_room(&self, room: StoredRoom) -> Result<()> {
         let spec = room.spec()?;
         let history_id = spec.room_id.clone();
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.room.as_ref() != Some(&room) && inner.profile.auto_accept_files {
+                let mut profile = inner.profile.clone();
+                profile.auto_accept_files = false;
+                self.store.save_profile(&profile)?;
+                inner.profile = profile;
+            }
+        }
         {
             let mut saved = self.saved.lock().unwrap();
             saved.room = Some(room.clone());
@@ -684,6 +699,12 @@ impl Core {
     }
 
     pub(crate) async fn mark_disconnected(&self) {
+        let _operation = self.operations.lock().await;
+        {
+            let mut direct = self.direct.lock().await;
+            direct.cancel.cancel();
+            *direct = direct_files::DirectState::default();
+        }
         let mut inner = self.inner.lock().await;
         inner.sender = None;
         inner.peer_name = None;
@@ -691,8 +712,10 @@ impl Core {
         inner.connection = "disconnected".into();
         // Mailbox deliveries continue while the P2P session is down. A transient
         // disconnect must never fail or cancel a durable transfer.
+        let room = inner.history_room.clone();
         let event = state_event(&inner);
         drop(inner);
+        if let Err(error) = self.recover_direct_room(&room).await { self.emit_error(error.to_string()); }
         self.emit(event);
     }
 
@@ -714,26 +737,30 @@ impl Core {
     }
 
     pub async fn offer_file(&self, path: PathBuf) -> Result<Transfer> {
-        // Files always use the mailbox path: it gives one durable writer, an
-        // immutable encrypted spool and resumable, consent-gated delivery.
+        if let Some(transfer) = self.direct_offer(&path).await? { return Ok(transfer); }
         self.mailbox_offer_file(path).await
     }
 
     pub async fn accept_file(&self, id: Uuid) -> Result<()> {
         let _operation = self.operations.lock().await;
-        // Files are mailbox-only: acceptance starts a consent-gated download.
+        let room = self.current_room_id().await?;
+        if self.store.transfer(&room, &id.to_string())?.is_some_and(|t| t.via.as_deref() == Some("direct")) {
+            return self.direct_accept(&room, id).await;
+        }
         self.mailbox_accept_file(id).await
     }
 
-    pub async fn cancel_transfer(&self, id: Uuid) -> Result<()> {
+    async fn cancel_file(&self, id: Uuid, rejected: bool) -> Result<()> {
         let _operation = self.operations.lock().await;
-        self.mailbox_cancel_file(id, false).await
+        let room = self.current_room_id().await?;
+        if self.store.transfer(&room, &id.to_string())?.is_some_and(|t| t.via.as_deref() == Some("direct")) {
+            return self.direct_cancel(&room, id, rejected, true).await;
+        }
+        self.mailbox_cancel_file(id, rejected).await
     }
 
-    pub async fn reject_file(&self, id: Uuid) -> Result<()> {
-        let _operation = self.operations.lock().await;
-        self.mailbox_cancel_file(id, true).await
-    }
+    pub async fn cancel_transfer(&self, id: Uuid) -> Result<()> { self.cancel_file(id, false).await }
+    pub async fn reject_file(&self, id: Uuid) -> Result<()> { self.cancel_file(id, true).await }
 
     /* ---------- session ---------- */
 
@@ -759,9 +786,15 @@ impl Core {
         {
             let mut inner = self.inner.lock().await;
             anyhow::ensure!(inner.generation == generation && inner.history_room == room_id && !inner.paused, "连接已改变");
+            {
+                let mut direct = self.direct.lock().await;
+                direct.cancel.cancel();
+                *direct = direct_files::DirectState::default();
+                direct.supported = peer.files;
+            }
             inner.sender = Some(tx.clone());
             inner.connection = "connected".into();
-            inner.peer_name = Some(peer.clone());
+            inner.peer_name = Some(peer.name.clone());
             inner.reconnect = None;
         }
         self.emit_state().await;
@@ -813,6 +846,7 @@ impl Core {
     ) -> Result<()> {
         let _operation = self.operations.lock().await;
         anyhow::ensure!(self.generation_is_current(room_id, generation).await, "连接已改变");
+        let rejected = matches!(&frame, Frame::Control(Control::Reject { .. }));
         match frame {
             Frame::Control(Control::Ping) => { let _ = tx.try_send(Frame::Control(Control::Pong)); },
             Frame::Control(Control::Pong) => (),
@@ -852,17 +886,24 @@ impl Core {
                 }
                 let _ = tx.try_send(Frame::Control(Control::Receipt { id }));
             }
-            // Direct/relay file frames are retired: files are mailbox-only and
-            // consent-gated. Ignore any legacy peer still speaking v0 frames so
-            // the session survives, but never create a transfer from them.
-            Frame::Control(Control::Offer { .. })
-            | Frame::Control(Control::Accept { .. })
-            | Frame::Control(Control::Finish { .. })
-            | Frame::Control(Control::Complete { .. })
-            | Frame::Control(Control::Cancel { .. })
-            | Frame::Chunk { .. } => {
-                return Ok(());
+            Frame::Control(Control::Offer { id, name, size, hash }) => {
+                if self.direct.lock().await.supported {
+                    self.direct_receive_offer(room_id, id, name, size, hash).await?;
+                }
             }
+            Frame::Control(Control::Accept { id }) => {
+                if self.direct.lock().await.supported {
+                    self.direct_start_send(room_id, generation, id, tx.clone()).await?;
+                }
+            }
+            Frame::Control(Control::Finish { id }) => self.direct_finish(room_id, id, tx).await?,
+            Frame::Control(Control::Complete { id }) => self.direct_complete(room_id, id).await?,
+            Frame::Control(Control::Cancel { id }) | Frame::Control(Control::Reject { id }) => {
+                if self.store.transfer(room_id, &id.to_string())?.is_some_and(|t| t.via.as_deref() == Some("direct")) {
+                    self.direct_cancel(room_id, id, rejected, false).await?;
+                }
+            }
+            Frame::Chunk { id, bytes } => self.direct_chunk(room_id, id, bytes).await?,
         }
         Ok(())
     }

@@ -16,6 +16,11 @@ async fn pair() -> (Arc<Core>, Arc<Core>, tempfile::TempDir, tempfile::TempDir, 
     left.import_server_code(&pairing::encode_server_code(&test_server(TEST_PREFIX)).unwrap()).await.unwrap();
     let invitation = left.create_room().await.unwrap();
     right.join_room(&invitation).await.unwrap();
+    let cancel = connect_pair(&left, &right).await;
+    (left, right, left_dir, right_dir, cancel)
+}
+
+async fn connect_pair(left: &Arc<Core>, right: &Arc<Core>) -> CancellationToken {
     let room_id = left.snapshot().await.unwrap().room.unwrap().room_id;
     let left_generation = left.inner.lock().await.generation;
     let right_generation = right.inner.lock().await.generation;
@@ -49,7 +54,7 @@ async fn pair() -> (Arc<Core>, Arc<Core>, tempfile::TempDir, tempfile::TempDir, 
     })
     .await
     .unwrap();
-    (left, right, left_dir, right_dir, cancel)
+    cancel
 }
 
 /* ---------- pairing codes ---------- */
@@ -861,4 +866,303 @@ async fn unverifiable_event_is_quarantined_without_ack_or_receipt() {
     assert!(server.host.lock().await.events.iter().any(|event|event.id==id));
     assert_eq!(server.host.lock().await.posts, 0);
     cancel.cancel();
+}
+
+/* ---------- consent-gated P2P and portable backups ---------- */
+
+async fn direct_with_mailbox() -> (MailboxPair, CancellationToken) {
+    let pair = mailbox_pair().await;
+    let link = connect_pair(&pair.left, &pair.right).await;
+    (pair, link)
+}
+
+#[tokio::test]
+async fn p2p_file_waits_for_consent_never_stages_bytes_and_preserves_existing() {
+    let (pair, link) = direct_with_mailbox().await;
+    let bytes: Vec<u8> = (0..2 * 1024 * 1024 + 31).map(|i| (i % 251) as u8).collect();
+    let source = pair.left_dir.path().join("直连报告.bin");
+    tokio::fs::write(&source, &bytes).await.unwrap();
+    tokio::fs::write(pair.right_dir.path().join("直连报告.bin"), b"existing").await.unwrap();
+    let transfer = pair.left.offer_file(source).await.unwrap();
+    assert_eq!(transfer.via.as_deref(), Some("direct"));
+    wait_transfer(&pair.right, 0, "offered").await;
+    sleep(Duration::from_millis(200)).await;
+    let files: Vec<_> = std::fs::read_dir(pair.right_dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(files.len(), 2, "only data directory and pre-existing file before consent");
+    assert!(pair.server.host.lock().await.files.is_empty());
+    pair.right.accept_file(Uuid::parse_str(&transfer.id).unwrap()).await.unwrap();
+    wait_transfer(&pair.right, 0, "completed").await;
+    wait_transfer(&pair.left, 0, "completed").await;
+    assert_eq!(tokio::fs::read(pair.right_dir.path().join("直连报告 (1).bin")).await.unwrap(), bytes);
+    assert_eq!(tokio::fs::read(pair.right_dir.path().join("直连报告.bin")).await.unwrap(), b"existing");
+    let server = pair.server.host.lock().await;
+    assert!(server.files.is_empty(), "P2P bytes must not create mailbox objects");
+    assert!(server.requested_chunks.is_empty());
+    drop(server);
+    link.cancel(); pair.left.shutdown().await; pair.right.shutdown().await;
+}
+
+#[tokio::test]
+async fn p2p_bidirectional_auto_accept_streams_without_deadlock() {
+    let (left, right, left_dir, right_dir, cancel) = pair().await;
+    for core in [&left, &right] {
+        let mut profile = core.snapshot().await.unwrap().profile;
+        assert!(!profile.auto_accept_files);
+        profile.auto_accept_files = true;
+        core.save_profile(profile).await.unwrap();
+    }
+    let a = vec![12u8; 4 * 1024 * 1024 + 23];
+    let b = vec![49u8; 3 * 1024 * 1024 + 17];
+    let source_a = left_dir.path().join("left.bin");
+    let source_b = right_dir.path().join("right.bin");
+    tokio::fs::write(&source_a, &a).await.unwrap();
+    tokio::fs::write(&source_b, &b).await.unwrap();
+    let (sent_a, sent_b) = tokio::join!(left.offer_file(source_a), right.offer_file(source_b));
+    sent_a.unwrap(); sent_b.unwrap();
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let a = left.snapshot().await.unwrap(); let b = right.snapshot().await.unwrap();
+            if a.transfers.len() == 2 && b.transfers.len() == 2 && a.transfers.iter().chain(b.transfers.iter()).all(|t| t.status == "completed") { break; }
+            sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(tokio::fs::read(right_dir.path().join("left.bin")).await.unwrap(), a);
+    assert_eq!(tokio::fs::read(left_dir.path().join("right.bin")).await.unwrap(), b);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn p2p_refusal_and_sender_cancellation_never_download_or_fallback() {
+    let (pair, link) = direct_with_mailbox().await;
+    let source = pair.left_dir.path().join("拒绝.txt");
+    tokio::fs::write(&source, b"no consent").await.unwrap();
+    let transfer = pair.left.offer_file(source.clone()).await.unwrap();
+    wait_transfer(&pair.right, 0, "offered").await;
+    pair.right.reject_file(Uuid::parse_str(&transfer.id).unwrap()).await.unwrap();
+    wait_transfer(&pair.left, 0, "rejected").await;
+    let second = pair.left.offer_file(source).await.unwrap();
+    wait_transfer(&pair.right, 1, "offered").await;
+    pair.left.cancel_transfer(Uuid::parse_str(&second.id).unwrap()).await.unwrap();
+    wait_transfer(&pair.right, 1, "cancelled").await;
+    link.cancel();
+    timeout(Duration::from_secs(3), async {
+        while pair.left.snapshot().await.unwrap().connection != "disconnected" { sleep(Duration::from_millis(10)).await; }
+    }).await.unwrap();
+    assert_eq!(pair.left.snapshot().await.unwrap().transfers[0].status, "rejected");
+    assert_eq!(pair.left.snapshot().await.unwrap().transfers[1].status, "cancelled");
+    assert!(!pair.right_dir.path().join("拒绝.txt").exists());
+    assert!(pair.server.host.lock().await.files.is_empty());
+    pair.left.shutdown().await; pair.right.shutdown().await;
+}
+
+#[tokio::test]
+async fn p2p_disconnect_falls_back_to_mailbox_under_same_offer() {
+    let (pair, link) = direct_with_mailbox().await;
+    let source = pair.left_dir.path().join("回退.txt");
+    tokio::fs::write(&source, b"offline fallback bytes").await.unwrap();
+    let sent = pair.left.offer_file(source).await.unwrap();
+    wait_transfer(&pair.right, 0, "offered").await;
+    link.cancel();
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let s = pair.right.snapshot().await.unwrap();
+            if s.transfers[0].status == "offered" && s.transfers[0].via.as_deref() == Some("mailbox") { break; }
+            sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(pair.right.snapshot().await.unwrap().transfers.len(), 1);
+    pair.right.accept_file(Uuid::parse_str(&sent.id).unwrap()).await.unwrap();
+    wait_transfer(&pair.right, 0, "completed").await;
+    wait_transfer(&pair.left, 0, "completed").await;
+    assert_eq!(tokio::fs::read(pair.right_dir.path().join("回退.txt")).await.unwrap(), b"offline fallback bytes");
+    pair.left.shutdown().await; pair.right.shutdown().await;
+}
+
+#[tokio::test]
+async fn p2p_source_change_fails_integrity_without_publishing() {
+    let (left, right, left_dir, right_dir, cancel) = pair().await;
+    let source = left_dir.path().join("变化.txt");
+    tokio::fs::write(&source, b"original").await.unwrap();
+    let sent = left.offer_file(source.clone()).await.unwrap();
+    wait_transfer(&right, 0, "offered").await;
+    tokio::fs::write(source, b"modified").await.unwrap();
+    right.accept_file(Uuid::parse_str(&sent.id).unwrap()).await.unwrap();
+    wait_transfer(&left, 0, "failed").await;
+    timeout(Duration::from_secs(3), async {
+        while right.snapshot().await.unwrap().transfers[0].status == "downloading" { sleep(Duration::from_millis(10)).await; }
+    }).await.unwrap();
+    assert!(!right_dir.path().join("变化.txt").exists());
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn p2p_accepts_above_mailbox_limit_and_big_disconnect_never_stages() {
+    // Sparse source exercises the real uncapped streaming hasher without
+    // allocating a GiB-sized buffer or sending a GiB to the test server.
+    let (left, right, left_dir, _right_dir, cancel) = pair().await;
+    let path = left_dir.path().join("超过信箱限制.bin");
+    std::fs::File::create(&path).unwrap().set_len(files::MAX_FILE_SIZE + 1).unwrap();
+    let sent = left.offer_file(path.clone()).await.unwrap();
+    assert_eq!(sent.size, files::MAX_FILE_SIZE + 1);
+    wait_transfer(&right, 0, "offered").await;
+    cancel.cancel();
+    wait_transfer(&left, 0, "failed").await;
+    let snapshot = left.snapshot().await.unwrap();
+    assert!(snapshot.transfers[0].error.as_deref().unwrap().contains("1 GiB"));
+    let room = snapshot.room.unwrap().room_id;
+    assert_eq!(left.store.upload(&room, &sent.id).unwrap().unwrap().status, "failed");
+    assert!(left.mailbox_offer_file(path).await.unwrap_err().to_string().contains("1 GiB"));
+}
+
+#[tokio::test]
+async fn backup_round_trip_merges_all_pages_retains_local_directory_and_never_replays() {
+    let (left, right, left_dir, _right_dir, cancel) = pair().await;
+    let room = left.snapshot().await.unwrap().room.unwrap().room_id;
+    for index in 0..205 {
+        left.store.save_message(&room, &Message { id: Uuid::new_v4().to_string(), text: format!("历史 {index}"), outgoing: true,
+            timestamp: index + 1, delivery: "pending".into(), via: None }).unwrap();
+    }
+    let path = left_dir.path().join("未完成.txt");
+    tokio::fs::write(&path, b"not exported bytes").await.unwrap();
+    left.offer_file(path).await.unwrap();
+    wait_transfer(&right, 0, "offered").await;
+    let backup = left_dir.path().join("export.json");
+    left.export_data(backup.clone()).await.unwrap();
+    assert!(left.export_data(backup.clone()).await.is_err(), "export cannot overwrite an existing file");
+    let raw = std::fs::read_to_string(&backup).unwrap();
+    assert!(!raw.contains("source_path") && !raw.contains("sourcePath") && !raw.contains("tempPath"));
+    let target = tempfile::tempdir().unwrap();
+    let fresh = Core::open(target.path().join("data"), target.path().into(), PathBuf::new()).unwrap();
+    let report = fresh.import_data(backup.clone()).await.unwrap();
+    assert_eq!(report.messages_added, 205);
+    assert_eq!(report.transfers_added, 1);
+    assert!(report.restored_connection);
+    let snapshot = fresh.snapshot().await.unwrap();
+    assert!(snapshot.paused && !snapshot.profile.auto_accept_files);
+    assert_eq!(PathBuf::from(snapshot.profile.download_dir), target.path());
+    assert_eq!(snapshot.transfers[0].status, "cancelled");
+    assert_eq!(fresh.store.pending_outbox(&room).unwrap(), 0);
+    assert!(fresh.store.uploads(&room).unwrap().is_empty());
+    assert!(fresh.store.downloads(&room).unwrap().is_empty());
+    assert_eq!(fresh.store.backup_records().unwrap().0.len(), 205, "backup includes older pages");
+    assert!(fresh.snapshot().await.unwrap().messages.iter().all(|m| m.delivery == "unknown"));
+    let again = fresh.import_data(backup).await.unwrap();
+    assert_eq!(again.messages_added, 0); assert_eq!(again.transfers_added, 0);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn backup_rejects_future_invalid_and_malicious_rows_without_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(dir.path().join("data"), dir.path().into(), PathBuf::new()).unwrap();
+    let path = dir.path().join("archive.json");
+    core.export_data(path.clone()).await.unwrap();
+    let mut archive: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    archive["version"] = serde_json::json!(999);
+    std::fs::write(&path, serde_json::to_vec(&archive).unwrap()).unwrap();
+    assert!(core.import_data(path.clone()).await.is_err());
+    archive["version"] = serde_json::json!(1);
+    archive["messages"] = serde_json::json!([{"room":"../unsafe","message":{"id":Uuid::new_v4().to_string(),"text":"bad","outgoing":false,"timestamp":1,"delivery":"delivered"}}]);
+    std::fs::write(&path, serde_json::to_vec(&archive).unwrap()).unwrap();
+    assert!(core.import_data(path).await.is_err());
+    assert!(core.snapshot().await.unwrap().room.is_none());
+    assert!(core.store.backup_records().unwrap().0.is_empty());
+}
+
+#[tokio::test]
+async fn p2p_prior_consent_survives_offline_fallback_and_empty_file_completes() {
+    let (pair, link) = direct_with_mailbox().await;
+    let source = pair.left_dir.path().join("已同意.bin");
+    let bytes = vec![7; 2 * 1024 * 1024 + 21];
+    tokio::fs::write(&source, &bytes).await.unwrap();
+    let sent = pair.left.offer_file(source).await.unwrap();
+    wait_transfer(&pair.right, 0, "offered").await;
+    pair.right.accept_file(Uuid::parse_str(&sent.id).unwrap()).await.unwrap();
+    link.cancel();
+    wait_transfer(&pair.right, 0, "completed").await;
+    wait_transfer(&pair.left, 0, "completed").await;
+    assert_eq!(tokio::fs::read(pair.right_dir.path().join("已同意.bin")).await.unwrap(), bytes);
+    assert_eq!(pair.right.snapshot().await.unwrap().transfers.len(), 1);
+    pair.left.shutdown().await; pair.right.shutdown().await;
+
+    let (left, right, left_dir, right_dir, cancel) = self::pair().await;
+    let mut profile = right.snapshot().await.unwrap().profile;
+    profile.auto_accept_files = true;
+    right.save_profile(profile).await.unwrap();
+    let source = left_dir.path().join("empty.txt");
+    tokio::fs::write(&source, b"").await.unwrap();
+    left.offer_file(source).await.unwrap();
+    wait_transfer(&right, 0, "completed").await;
+    wait_transfer(&left, 0, "completed").await;
+    assert_eq!(std::fs::metadata(right_dir.path().join("empty.txt")).unwrap().len(), 0);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn offline_auto_accept_is_opt_in_and_persisted() {
+    let pair = mailbox_pair().await;
+    let mut profile = pair.right.snapshot().await.unwrap().profile;
+    assert!(!profile.auto_accept_files);
+    profile.auto_accept_files = true;
+    pair.right.save_profile(profile).await.unwrap();
+    let source = pair.left_dir.path().join("自动接收.txt");
+    tokio::fs::write(&source, b"consented by saved preference").await.unwrap();
+    pair.left.offer_file(source).await.unwrap();
+    wait_transfer(&pair.right, 0, "completed").await;
+    wait_transfer(&pair.left, 0, "completed").await;
+    let profile = pair.right.store.profile(pair.right.snapshot().await.unwrap().profile).unwrap();
+    assert!(profile.auto_accept_files);
+    assert_eq!(std::fs::read(pair.right_dir.path().join("自动接收.txt")).unwrap(), b"consented by saved preference");
+    pair.left.shutdown().await; pair.right.shutdown().await;
+}
+
+#[tokio::test]
+async fn backup_merge_preserves_current_room_and_newer_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Core::open(dir.path().join("source"), dir.path().into(), PathBuf::new()).unwrap();
+    source.import_server_code(&pairing::encode_server_code(&test_server(TEST_PREFIX)).unwrap()).await.unwrap();
+    source.create_room().await.unwrap();
+    let room = source.snapshot().await.unwrap().room.unwrap().room_id;
+    let message = Message { id: Uuid::new_v4().to_string(), text: "already delivered".into(), outgoing: true,
+        timestamp: 1, delivery: "stored".into(), via: Some("mailbox".into()) };
+    source.store.save_message(&room, &message).unwrap();
+    let path = dir.path().join("backup.json");
+    source.export_data(path.clone()).await.unwrap();
+    let target = Core::open(dir.path().join("target"), dir.path().into(), PathBuf::new()).unwrap();
+    target.import_server_code(&pairing::encode_server_code(&test_server(TEST_PREFIX)).unwrap()).await.unwrap();
+    target.create_room().await.unwrap();
+    let target_room = target.pairing_key().await.unwrap();
+    target.pause().await.unwrap();
+    target.store.save_message(&room, &Message { delivery: "delivered".into(), ..message.clone() }).unwrap();
+    let report = target.import_data(path).await.unwrap();
+    assert!(!report.restored_connection);
+    assert_eq!(target.pairing_key().await.unwrap(), target_room);
+    assert_eq!(target.store.message(&room, &message.id).unwrap().unwrap().delivery, "delivered");
+    assert!(target.snapshot().await.unwrap().paused);
+}
+
+#[tokio::test]
+async fn new_room_resets_auto_accept_and_completion_can_overtake_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(dir.path().join("data"), dir.path().into(), PathBuf::new()).unwrap();
+    core.import_server_code(&pairing::encode_server_code(&test_server(TEST_PREFIX)).unwrap()).await.unwrap();
+    core.create_room().await.unwrap();
+    let mut profile = core.snapshot().await.unwrap().profile;
+    profile.auto_accept_files = true;
+    core.save_profile(profile).await.unwrap();
+    core.create_room().await.unwrap();
+    assert!(!core.snapshot().await.unwrap().profile.auto_accept_files);
+    let room = core.current_room_id().await.unwrap();
+    let id = Uuid::new_v4().to_string();
+    let transfer = Transfer { id: id.clone(), name: "receipt.txt".into(), size: 5, transferred: 5,
+        outgoing: true, status: "waiting".into(), via: Some("direct".into()), error: None };
+    core.store.insert_upload(&storage::UploadRow { room: room.clone(), file_id: id.clone(),
+        source_path: dir.path().join("receipt.txt").to_string_lossy().into_owned(), name: transfer.name.clone(), size: 5,
+        hash: "a".repeat(64), encrypted_size: 0, chunk_count: 0, status: "directFinishing".into(), error: None, created_at: now() }, &transfer).unwrap();
+    core.store.recover_direct(&room).unwrap();
+    assert_eq!(core.store.upload(&room, &id).unwrap().unwrap().status, "pending");
+    let completed = Transfer { status: "completed".into(), ..transfer };
+    assert!(core.store.complete_upload(&room, &id, &completed).unwrap());
+    core.store.set_upload_status(&room, &id, "cancelled", None).unwrap();
+    assert!(!core.store.complete_upload(&room, &id, &completed).unwrap(), "late receipts must never revive cancellation");
 }

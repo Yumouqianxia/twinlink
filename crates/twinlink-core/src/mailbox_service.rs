@@ -438,6 +438,7 @@ impl Core {
                 Ok(())
             }
             Body::Offer { id, name, size, hash } => {
+                let _operation = self.operations.lock().await;
                 self.receive_offer(room_id, &id, name, size, hash).await
             }
             Body::FileComplete { id } => {
@@ -541,9 +542,12 @@ impl Core {
             bail!("对方文件信息无效");
         }
         validate_name(&name)?;
-        if self.store.download(room_id, id)?.is_some() {
-            return Ok(());
+        let previous = self.store.download(room_id, id)?;
+        if let Some(previous) = previous.as_ref() {
+            if previous.status != "directInterrupted" { return Ok(()); }
+            anyhow::ensure!(previous.name == name && previous.size == size && previous.hash == hash, "离线文件与直连邀请不一致");
         }
+        let already_accepted = previous.as_ref().is_some_and(|row| row.target_dir.is_some());
         let download = DownloadRow {
             room: room_id.into(),
             file_id: id.into(),
@@ -559,7 +563,7 @@ impl Core {
             created_at: now(),
             final_path: None,
         };
-        let transfer = Transfer {
+        let transfer = Transfer { via: Some("mailbox".into()),
             id: id.into(),
             name,
             size,
@@ -568,8 +572,16 @@ impl Core {
             status: "offered".into(),
             error: None,
         };
-        self.store.insert_offer(&download, &transfer)?;
+        if previous.is_some() {
+            self.store.set_download(room_id, id, "offered", None, None, 0, None)?;
+            self.store.save_transfer(room_id, &transfer)?;
+        } else {
+            self.store.insert_offer(&download, &transfer)?;
+        }
         self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
+        if already_accepted || self.inner.lock().await.profile.auto_accept_files {
+            self.mailbox_accept_file(Uuid::parse_str(id)?).await?;
+        }
         Ok(())
     }
 
@@ -579,11 +591,12 @@ impl Core {
         room_id: &str,
         id: &str,
     ) -> Result<()> {
+        let operation = self.operations.lock().await;
         if let Some(upload) = self.store.upload(room_id, id)? {
             // Only an upload that actually reached the peer may become
             // completed. A late completion for a failed/cancelled upload must
             // never rewrite terminal history.
-            let transfer = Transfer {
+            let transfer = Transfer { via: self.store.transfer(room_id, id)?.and_then(|t| t.via),
                 id: id.into(),
                 name: upload.name.clone(),
                 size: upload.size,
@@ -597,6 +610,7 @@ impl Core {
                 self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
             }
         }
+        drop(operation);
         // Deleting is safe only after the local completion transaction (or when
         // no local upload exists any more); a DB error above retries the event.
         let _ = client.delete_file(id).await;
@@ -610,12 +624,14 @@ impl Core {
         id: &str,
         rejected: bool,
     ) -> Result<()> {
+        let operation = self.operations.lock().await;
+        let mut delete_file = false;
         let status = if rejected { "rejected" } else { "cancelled" };
         if let Some(upload) = self.store.upload(room_id, id)? {
-            if !["completed", "cancelled", "rejected", "withdrawn"].contains(&upload.status.as_str()) {
+            if !["completed", "failed", "cancelled", "rejected", "withdrawn"].contains(&upload.status.as_str()) {
                 self.store.set_upload_status(room_id, id, status, None)?;
                 let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, id));
-                let transfer = Transfer {
+                let transfer = Transfer { via: self.store.transfer(room_id, id)?.and_then(|t| t.via),
                     id: id.into(),
                     name: upload.name.clone(),
                     size: upload.size,
@@ -627,16 +643,17 @@ impl Core {
                 self.store.save_transfer(room_id, &transfer)?;
                 self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
             }
-            let _ = client.delete_file(id).await;
+            delete_file = true;
         }
         if let Some(download) = self.store.download(room_id, id)? {
-            if !["completed", "cancelled", "rejected"].contains(&download.status.as_str()) {
+            if let Ok(id) = Uuid::parse_str(id) { self.direct.lock().await.cancel_file(id); }
+            if !["completed", "failed", "cancelled", "rejected"].contains(&download.status.as_str()) {
                 self.store
                     .set_download(room_id, id, status, download.target_dir.as_deref(), None, 0, None)?;
                 if let Some(path) = download.temp_path.clone() {
                     let _ = fs::remove_file(path);
                 }
-                let transfer = Transfer {
+                let transfer = Transfer { via: self.store.transfer(room_id, id)?.and_then(|t| t.via),
                     id: id.into(),
                     name: download.name.clone(),
                     size: download.size,
@@ -649,6 +666,8 @@ impl Core {
                 self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
             }
         }
+        drop(operation);
+        if delete_file { let _ = client.delete_file(id).await; }
         Ok(())
     }
 
@@ -670,10 +689,13 @@ impl Core {
                     let _operation = self.operations.lock().await;
                     if !matches!(self.store.upload(room_id, &upload.file_id), Ok(Some(row)) if row.status == "pending") { continue; }
                     let (status, error) = match prepared { Ok(()) => ("uploading", None), Err(e) => ("failed", Some(e.to_string())) };
-                    let transfer = Transfer { id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
+                    let transfer = Transfer { via: Some("mailbox".into()), id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
                         transferred: 0, outgoing: true, status: status.into(), error: error.clone() };
                     if self.store.update_upload_with_event(room_id, &upload.file_id, status, error.as_deref(), &transfer, None).map_err(db_error)? {
-                        if error.is_some() { let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, &upload.file_id)); }
+                        if error.is_some() {
+                            let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, &upload.file_id));
+                            self.notify_file_failure(room_id, &upload.file_id).await.map_err(db_error)?;
+                        }
                         self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
                     }
                     return Ok(());
@@ -853,7 +875,7 @@ impl Core {
             .map_err(db_error)?;
         let _operation = self.operations.lock().await;
         if !matches!(self.store.upload(room_id, &upload.file_id), Ok(Some(row)) if row.status == "uploading") { return Ok(()); }
-        let waiting = Transfer { id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
+        let waiting = Transfer { via: Some("mailbox".into()), id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
             transferred: upload.size, outgoing: true, status: "waiting".into(), error: None };
         if self.store.update_upload_with_event(room_id, &upload.file_id, "waiting", None, &waiting,
             Some((&event_id, &format!("file-offer:{}", upload.file_id), "offer", &peer, &envelope))).map_err(db_error)? {
@@ -885,10 +907,11 @@ impl Core {
             error.to_string()
         };
         let _operation = self.operations.lock().await;
-        let transfer = Transfer { id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
+        let transfer = Transfer { via: Some("mailbox".into()), id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
             transferred: 0, outgoing: true, status: "failed".into(), error: Some(message.clone()) };
         if self.store.update_upload_with_event(room_id, &upload.file_id, "failed", Some(&message), &transfer, None).map_err(db_error)? {
             let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, &upload.file_id));
+            self.notify_file_failure(room_id, &upload.file_id).await.map_err(db_error)?;
             self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
         }
         Ok(())
@@ -1056,7 +1079,7 @@ impl Core {
         };
         // Durably record the publishing intent (final path + temp) before we
         // touch the destination so a crash mid-publish can be recovered.
-        let publishing = Transfer {
+        let publishing = Transfer { via: Some("mailbox".into()),
             id: download.file_id.clone(),
             name: download.name.clone(),
             size: download.size,
@@ -1101,7 +1124,7 @@ impl Core {
         let event_id = Uuid::new_v4().to_string();
         let plaintext = Body::FileComplete { id: download.file_id.clone() }.encode().map_err(db_error)?;
         let envelope = crypto::seal_event(&seed, room_id, &role, &peer, &event_id, &plaintext).map_err(db_error)?;
-        let completed = Transfer {
+        let completed = Transfer { via: Some("mailbox".into()),
             id: download.file_id.clone(),
             name: download.name.clone(),
             size: download.size,
@@ -1147,7 +1170,7 @@ impl Core {
         let final_path = match download.final_path.clone() {
             Some(path) => PathBuf::from(path),
             None => {
-                let transfer = Transfer {
+                let transfer = Transfer { via: self.store.transfer(room_id, &download.file_id).ok().flatten().and_then(|t| t.via),
                     id: download.file_id.clone(),
                     name: download.name.clone(),
                     size: download.size,
@@ -1182,7 +1205,7 @@ impl Core {
         .await
         .map_err(|error| db_error(anyhow!(error)))?;
         if verified.is_err() {
-            let transfer = Transfer {
+            let transfer = Transfer { via: self.store.transfer(room_id, &download.file_id).ok().flatten().and_then(|t| t.via),
                 id: download.file_id.clone(),
                 name: download.name.clone(),
                 size: download.size,
@@ -1207,7 +1230,7 @@ impl Core {
             .map_err(db_error)?;
         let envelope = crypto::seal_event(&seed, room_id, &role, &peer, &event_id, &plaintext)
             .map_err(db_error)?;
-        let completed = Transfer {
+        let completed = Transfer { via: self.store.transfer(room_id, &download.file_id).ok().flatten().and_then(|t| t.via),
             id: download.file_id.clone(),
             name: download.name.clone(),
             size: download.size,
@@ -1238,7 +1261,7 @@ impl Core {
     }
 
     async fn fail_download(&self, room_id: &str, download: &DownloadRow, message: &str) {
-        let transfer = Transfer {
+        let transfer = Transfer { via: Some("mailbox".into()),
             id: download.file_id.clone(),
             name: download.name.clone(),
             size: download.size,
@@ -1258,7 +1281,16 @@ impl Core {
         if matches!(saved, Ok(true)) { self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await; }
     }
 
-    async fn current_identity(&self, room_id: &str) -> Result<(String, String, String)> {
+    pub(crate) async fn notify_file_failure(&self, room: &str, id: &str) -> Result<()> {
+        let (role, peer, seed) = self.current_identity(room).await?;
+        let event_id = Uuid::new_v4().to_string();
+        let envelope = crypto::seal_event(&seed, room, &role, &peer, &event_id, &Body::Cancel { id: id.into() }.encode()?)?;
+        self.store.enqueue_event(room, &event_id, &format!("file-cancel-{id}"), "fileAction", &peer, &envelope, now())?;
+        self.mailbox_wake.notify_one();
+        Ok(())
+    }
+
+    pub(crate) async fn current_identity(&self, room_id: &str) -> Result<(String, String, String)> {
         let inner = self.inner.lock().await;
         let spec = inner.room.as_ref().context("房间已切换")?.spec()?;
         if spec.room_id != room_id {
@@ -1279,7 +1311,7 @@ impl Core {
     ) {
         let mut transfer = match self.store.transfer(room_id, id) {
             Ok(Some(transfer)) => transfer,
-            _ => Transfer {
+            _ => Transfer { via: Some("mailbox".into()),
                 id: id.into(),
                 name: String::new(),
                 size,
@@ -1377,7 +1409,7 @@ impl Core {
             error: None,
             created_at: now(),
         };
-        let transfer = Transfer {
+        let transfer = Transfer { via: Some("mailbox".into()),
             id: id.clone(),
             name,
             size,
