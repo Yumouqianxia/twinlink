@@ -30,7 +30,9 @@
     "resources": [
       "engine/*",
       "../THIRD_PARTY_NOTICES.md",
-      "../third-party/easytier/LICENSE"
+      "../third-party/easytier/LICENSE",
+      "../LICENSE",
+      "../third-party/deepseek-harness/LICENSE"
     ],
     "icon": [
       "icons/32x32.png",

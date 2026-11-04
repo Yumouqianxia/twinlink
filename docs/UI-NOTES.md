@@ -1,21 +1,11 @@
 # 界面与实现委托记录
 
-当前界面和客户端工程由 DeepSeek Harness 参与实现，Codex 负责协调协议、
-服务端部署、代码复核和独立验收。
+2026-11-04 这轮界面改造及主题运行时由 DeepSeek Harness（项目配置模型 `deepseek-v4.1-flash`）实际执行；Codex 负责任务约束、源码审阅、独立回归、版权声明及验收。调用凭据与 DSH 对话保留在项目外的私有目录，不随代码和安装包分发。
 
-DSH 使用本项目专用配置，通过自定义 OpenAI-compatible 接口调用
-`deepseek-v4.1-flash`。凭据只保存在仓库外的私有配置目录；本文件不记录密钥。
-早期 `deepseek-account` 路由曾返回 402，后来已使用用户指定接口完成有效调用，
-不能再用那次失败描述当前实现。
+最终形态参考本机官方 Harness 0.2.1-rc.5 的 `ui-theme`、`ui-layout`、`ui-sidebar`、`ui-settings` 和 `ui-chat` 模块：浅灰侧栏、紧凑顶栏、圆角输入面板、统一线性图标、成组设置与一致的明暗语义色。未引入 Harness、Vue 或 Cordis 运行时，保留 vanilla TypeScript、Vite 及 TwinLink 自有双条标识。参考及适配范围的 MIT 版权声明保留在 `THIRD_PARTY_NOTICES.md` 和 `third-party/deepseek-harness/LICENSE`，并列入 Tauri 打包资源。
 
-项目级技能 `.agents/skills/frontend-design` 和 `webapp-testing` 可供 DSH 使用。
-界面采用 vanilla TypeScript、CSS 和内联 SVG，不下载远程字体或图片。
-中文界面包含会话、文件传输、配对和设置。浏览器预览明确标注，实际功能走
-Tauri IPC；不提供虚构的在线或传输状态。
+`src/themes.ts` 管理声明式 JSON 主题包与本地注册表：四套内置主题、用户主题安装／启用／替换／卸载、明暗及系统跟随、强调色和字号、热切换及本机持久化。外观控件在 `src/main.ts`，样式消费 `--tl-*` 语义变量；主题格式与示例见 [THEMES.md](THEMES.md)。
 
-最初 UI 委托限定 `src/main.ts`、`src/styles.css`、`index.html`；用户随后明确授权
-继续实现 Rust/API 与编译，工程阶段已协调解除该三文件限制。Rust core 与
-协议改动仍以经过协调的服务契约为准。
+本轮协调允许 `src/updates.ts` 做当前运行版本的文本展示修正，仍由后端报告的版本及打包版本作为来源；没有改变 GitHub 更新源限制、签名验证、显式安装确认或 Rust/API 契约。其余更新流程、配对、分页消息、P2P／离线文件、拖拽、自动接收和数据备份通过现有 API 保留。
 
-实际编译、浏览器检查与原生窗口检查见 `CLIENT-VALIDATION.md`。早期黑屏截图
-不能作为原生窗口成功的依据，最终验收应检查打包的 `.app` 和可见的原生控件。
+浏览器继续明确显示“界面预览”；产品代码没有演示回复、伪造对端、虚构在线状态或模拟传输。实际构建与测试、截图及平台限制见 [CLIENT-VALIDATION.md](CLIENT-VALIDATION.md)。

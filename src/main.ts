@@ -1,6 +1,29 @@
 import './styles.css';
-import { initializeUpdates, versionLabel } from './updates';
+import { initializeUpdates } from './updates';
 import { api, type AppEvent, type Message, type Snapshot, type Transfer } from './api';
+import {
+  exportThemeJson,
+  getAppearance,
+  getTheme,
+  initTheme,
+  installTheme,
+  listThemes,
+  MAX_THEME_BYTES,
+  paletteFor,
+  resetAppearance,
+  setAccent,
+  setFontSize,
+  setMode,
+  setTheme,
+  subscribeTheme,
+  uninstallTheme,
+  type ThemeMode,
+  type ThemeSummary,
+} from './themes';
+
+/* Paint the stored appearance before the shell exists, so the first frame is
+ * already in the right colour scheme and no white flash appears in dark mode. */
+initTheme();
 
 /* ---------- helpers ---------- */
 
@@ -23,6 +46,9 @@ const paths: Record<string, string> = {
   key: '<circle cx="8.2" cy="12" r="3.6"/><path d="M11.8 12H20M17.2 12v3.2M14.4 12v2.2"/>',
   play: '<path d="M8 5.4v13.2L19 12Z"/>',
   pause: '<path d="M8.6 5.4v13.2M15.4 5.4v13.2"/>',
+  palette: '<path d="M12 3.6a8.4 8.4 0 1 0 0 16.8c1.2 0 1.9-.8 1.9-1.8 0-1.1-.8-1.7-.8-2.7 0-.9.7-1.5 1.7-1.5h1.6a4.3 4.3 0 0 0 4.3-4.3c0-3.6-3.9-6.5-8.7-6.5Z"/><circle cx="8.4" cy="10.2" r="1.1"/><circle cx="12" cy="8" r="1.1"/><circle cx="15.6" cy="10" r="1.1"/>',
+  trash: '<path d="M5.4 7.6h13.2M10 7.6V5.8h4v1.8M7.2 7.6l1 11h7.6l1-11"/>',
+  file: '<path d="M13.4 4.4H7.2a1.8 1.8 0 0 0-1.8 1.8v11.6a1.8 1.8 0 0 0 1.8 1.8h9.6a1.8 1.8 0 0 0 1.8-1.8V9.4Z"/><path d="M13.4 4.4v5h5"/>',
 };
 
 const icon = (name: string) =>
@@ -48,9 +74,9 @@ const clock = (timestamp: number) =>
   new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
 const brandMark = `<svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true" focusable="false">
-  <rect x="2.4" y="6.6" width="8.6" height="14.8" rx="3.2" fill="#2563eb"/>
-  <rect x="17" y="6.6" width="8.6" height="14.8" rx="3.2" fill="#2563eb" fill-opacity=".32"/>
-  <path d="M11 14h6" stroke="#2563eb" stroke-width="1.7" stroke-linecap="round"/>
+  <rect x="2.4" y="6.6" width="8.6" height="14.8" rx="3.2" fill="currentColor"/>
+  <rect x="17" y="6.6" width="8.6" height="14.8" rx="3.2" fill="currentColor" fill-opacity=".32"/>
+  <path d="M11 14h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
 </svg>`;
 
 /* connection motif: two devices and the link between them, drawn per state */
@@ -136,6 +162,7 @@ $('#app').innerHTML = `
       <button type="button" class="link-btn room-open peer-room" hidden>房间详情</button>
     </section>
     <div class="side-foot">
+      <button type="button" class="nav-item appearance-open" aria-label="外观" title="外观与主题">${icon('palette')}<span>外观</span></button>
       <button type="button" class="nav-item settings-open" aria-label="设置" title="设置">${icon('settings')}<span>设置</span></button>
       <div class="device">
         <span class="avatar" aria-hidden="true">我</span>
@@ -329,6 +356,14 @@ $('#app').innerHTML = `
       <span class="field-hint">默认关闭，更换房间后关闭。开启后，新文件请求会直接接收并保存到上方目录；不会自动打开或执行文件。</span>
     </label>
 
+    <section class="dialog-section" aria-labelledby="appearance-heading">
+      <h3 id="appearance-heading">外观与主题</h3>
+      <p class="field-hint">明暗模式、强调色、正文字号与可安装的 JSON 主题包都在独立的外观面板中设置，不影响连接与记录。</p>
+      <div class="copy-row">
+        <button type="button" class="btn quiet open-appearance">打开外观与主题插件</button>
+      </div>
+    </section>
+
     <section class="dialog-section" aria-labelledby="backup-heading">
       <h3 id="backup-heading">数据导入与导出</h3>
       <p class="field-hint">备份包含全部聊天记录、传输记录和房间／服务器凭据，未加密，请妥善保存。附件本体及未完成的发送队列不包含在内。</p>
@@ -362,7 +397,7 @@ $('#app').innerHTML = `
     </section>
 
     <section class="dialog-section" aria-labelledby="update-heading">
-      <h3 id="update-heading">应用更新 <span class="update-version">${versionLabel}</span></h3>
+      <h3 id="update-heading">应用更新 <span class="update-version"></span></h3>
       <p class="field-hint" id="update-status" role="status" aria-live="polite">更新源固定为 GitHub。检查更新后，由你决定是否安装。</p>
       <p class="field-hint update-notes" id="update-notes" hidden></p>
       <progress id="update-progress" max="1" hidden aria-label="应用更新下载进度"></progress>
@@ -389,7 +424,80 @@ $('#app').innerHTML = `
 </dialog>
 
 <div id="file-drop-hint" class="file-drop-hint" hidden>松开发送所选文件</div>
-<div class="toast" role="status" aria-live="polite" hidden></div>`;
+<div class="toast" role="status" aria-live="polite" hidden></div>
+
+<dialog class="dialog" id="dlg-appearance" aria-labelledby="appearance-title">
+  <div class="dialog-form">
+    <div class="dialog-head">
+      <div>
+        <h2 id="appearance-title">外观</h2>
+        <p>主题插件是声明式 JSON 配色包，只包含颜色、圆角和字号，不执行任何代码。</p>
+      </div>
+      <button type="button" class="icon-btn dialog-close" aria-label="关闭">${icon('close')}</button>
+    </div>
+    <section class="dialog-section" aria-labelledby="appearance-mode-heading">
+      <h3 id="appearance-mode-heading">明暗模式</h3>
+      <div class="segmented" role="group" aria-label="明暗模式">
+        <button type="button" class="segmented-item" data-mode="light">浅色</button>
+        <button type="button" class="segmented-item" data-mode="dark">深色</button>
+        <button type="button" class="segmented-item" data-mode="system">跟随系统</button>
+      </div>
+      <p class="field-hint" id="appearance-mode-hint" role="status" aria-live="polite"></p>
+    </section>
+    <section class="dialog-section" aria-labelledby="appearance-theme-heading">
+      <h3 id="appearance-theme-heading">主题</h3>
+      <div class="theme-grid" id="theme-grid" role="radiogroup" aria-label="主题"></div>
+      <p class="field-hint" id="theme-status" role="status" aria-live="polite"></p>
+    </section>
+    <section class="dialog-section" aria-labelledby="appearance-tune-heading">
+      <h3 id="appearance-tune-heading">强调色与字号</h3>
+      <div class="appearance-row">
+        <label class="appearance-accent">
+          <span class="field-label">强调色</span>
+          <span class="accent-row">
+            <input type="color" id="accent-input" aria-label="自定义强调色" />
+            <button type="button" class="btn quiet small" id="accent-clear">恢复主题强调色</button>
+          </span>
+        </label>
+        <label class="appearance-size">
+          <span class="field-label">界面字号 <b id="font-size-value" class="mono"></b></span>
+          <input type="range" id="font-size-input" min="12" max="18" step="1" aria-label="界面字号" />
+        </label>
+      </div>
+    </section>
+    <section class="dialog-section" aria-labelledby="appearance-plugin-heading">
+      <h3 id="appearance-plugin-heading">主题插件</h3>
+      <p class="field-hint">导出会生成一个小型 JSON 文件，可以修改颜色后重新导入。也可以只复制文本自己保存。</p>
+      <div class="copy-row">
+        <button type="button" class="btn quiet" id="theme-import">导入主题包文件</button>
+        <button type="button" class="btn quiet" id="theme-export">导出当前主题</button>
+        <button type="button" class="btn quiet" id="theme-copy">复制主题 JSON</button>
+        <button type="button" class="btn quiet" id="theme-reset">恢复默认外观</button>
+      </div>
+      <input type="file" id="theme-file" accept="application/json,.json" hidden />
+      <p class="field-hint" id="theme-plugin-status" role="status" aria-live="polite"></p>
+      <div class="theme-confirm" id="theme-confirm" role="alertdialog" aria-labelledby="theme-confirm-message" hidden>
+        <p class="theme-confirm-text" id="theme-confirm-message"></p>
+        <div class="theme-confirm-actions">
+          <button type="button" class="btn quiet" id="theme-confirm-cancel">取消</button>
+          <button type="button" class="btn danger" id="theme-confirm-accept">删除主题</button>
+        </div>
+      </div>
+      <label class="field">
+        <span class="field-label">主题 JSON 文本</span>
+        <textarea class="input code-input" id="theme-json" rows="6" spellcheck="false" autocomplete="off" placeholder="导出的主题包会显示在这里，也可以粘贴主题包 JSON 后点“应用这份 JSON”。"></textarea>
+        <span class="field-hint">粘贴的主题包会先校验格式、颜色和大小（上限 64 KiB），通过后才会安装。</span>
+      </label>
+      <div class="copy-row">
+        <button type="button" class="btn quiet" id="theme-apply">应用这份 JSON</button>
+      </div>
+      <p class="form-error" id="theme-error" role="alert"></p>
+    </section>
+    <div class="dialog-foot">
+      <button type="button" class="btn quiet dialog-close">关闭</button>
+    </div>
+  </div>
+</dialog>`;
 
 /* ---------- rendering ---------- */
 
@@ -1140,13 +1248,275 @@ async function copyText(text: string): Promise<boolean> {
   return copied;
 }
 
+/* ---------- appearance & theme plugins ---------- */
+
+const modeLabels: Record<ThemeMode, string> = { light: '浅色', dark: '深色', system: '跟随系统' };
+
+let pendingConfirm: (() => void) | null = null;
+
+function themeCardMarkup(theme: ThemeSummary): string {
+  const palette = paletteFor(getAppearance().resolved, getTheme(theme.id) ?? undefined);
+  const preview = theme.builtin ? palette : { ...palette, accent: theme[getAppearance().resolved].accent };
+  const remove = theme.builtin
+    ? ''
+    : `<button type="button" class="theme-remove" data-remove-id="${esc(theme.id)}" aria-label="删除主题 ${esc(theme.name)}" title="删除主题">${icon('trash')}</button>`;
+  return `<div class="theme-option">
+    <button type="button" class="theme-card" role="radio" data-theme-id="${esc(theme.id)}" aria-checked="false">
+      <span class="theme-preview" style="--pv-canvas:${esc(preview.canvas)};--pv-sidebar:${esc(preview.sidebar)};--pv-ink:${esc(preview.ink)};--pv-line:${esc(preview.line)};--pv-accent:${esc(preview.accent)}" aria-hidden="true">
+        <i class="pv-bar"></i><i class="pv-panel"></i><i class="pv-dot"></i><i class="pv-line"></i><i class="pv-line short"></i>
+      </span>
+      <span class="theme-meta">
+        <span class="theme-name">${esc(theme.name)}</span>
+        <span class="theme-sub">${theme.builtin ? '内置' : `已安装 · v${esc(theme.version)}`}</span>
+      </span>
+    </button>
+    ${remove}
+  </div>`;
+}
+
+function setText(id: string, text: string) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = text;
+}
+
+function renderAppearance() {
+  const appearance = getAppearance();
+  const grid = document.getElementById('theme-grid');
+  if (grid) grid.innerHTML = listThemes().map(themeCardMarkup).join('');
+  $$('#theme-grid .theme-card').forEach(card => {
+    const active = card.dataset.themeId === appearance.themeId;
+    card.setAttribute('aria-checked', active ? 'true' : 'false');
+    card.classList.toggle('active', active);
+  });
+  $$('#dlg-appearance .segmented-item').forEach(item => {
+    const active = item.dataset.mode === appearance.mode;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  const active = getTheme(appearance.themeId);
+  setText(
+    'appearance-mode-hint',
+    appearance.mode === 'system'
+      ? `当前跟随系统，显示为${modeLabels[appearance.resolved]}。`
+      : `固定为${modeLabels[appearance.mode]}，不随系统切换。`,
+  );
+  const accent = document.getElementById('accent-input') as HTMLInputElement | null;
+  if (accent) accent.value = appearance.accent ?? (active ? active[appearance.resolved].accent : '#3b6ee0');
+  const size = document.getElementById('font-size-input') as HTMLInputElement | null;
+  const effectiveSize = appearance.fontSize ?? active?.style.fontSize ?? 14;
+  if (size) size.value = String(effectiveSize);
+  setText('font-size-value', `${effectiveSize}px`);
+}
+
+function setThemeError(message: string) {
+  setText('theme-error', message);
+}
+
+function applyThemePack(raw: string, replace = false) {
+  const result = installTheme(raw, { replace });
+  if (result.ok) {
+    setThemeError('');
+    setText('theme-plugin-status', `已${result.replaced ? '更新' : '安装'}主题「${result.theme.name}」。`);
+    setTheme(result.theme.id);
+    return;
+  }
+  if (result.conflict) {
+    askConfirm(
+      `已安装同名主题「${result.conflict.name}」（v${result.conflict.version}）。覆盖后原主题会被替换，主题 ID 不变。`,
+      '覆盖主题',
+      () => applyThemePack(raw, true),
+    );
+    return;
+  }
+  setThemeError(result.error);
+}
+
+function downloadTheme(json: string) {
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'twinlink-theme.json';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function openAppearance() {
+  setThemeError('');
+  clearConfirm();
+  setText('theme-plugin-status', '');
+  renderAppearance();
+  const dialog = $<HTMLDialogElement>('#dlg-appearance');
+  if (!dialog.open) dialog.showModal();
+}
+
+function confirmRemoveTheme(id: string) {
+  const theme = getTheme(id);
+  if (!theme) return;
+  const wasActive = getAppearance().themeId === id;
+  askConfirm(
+    wasActive
+      ? `删除主题「${theme.name}」？它是当前主题，删除后会回到默认主题。`
+      : `删除主题「${theme.name}」？删除后需要重新导入主题包才能恢复。`,
+    '删除主题',
+    () => {
+      const result = uninstallTheme(id);
+      if (!result.ok) {
+        setThemeError(result.error);
+        return;
+      }
+      setThemeError('');
+      setText('theme-plugin-status', result.fellBack ? '主题已删除，已回到默认主题。' : '主题已删除。');
+    },
+  );
+}
+
+/** Confirmation lives inside the dialog so no WebView script dialog is involved. */
+function askConfirm(message: string, actionLabel: string, run: () => void) {
+  pendingConfirm = run;
+  setText('theme-confirm-message', message);
+  setText('theme-confirm-accept', actionLabel);
+  const box = document.getElementById('theme-confirm');
+  if (box) box.hidden = false;
+  document.getElementById('theme-confirm-accept')?.focus();
+}
+
+function clearConfirm() {
+  pendingConfirm = null;
+  const box = document.getElementById('theme-confirm');
+  if (box) box.hidden = true;
+  setText('theme-confirm-message', '');
+}
+
+$('#dlg-appearance').addEventListener('click', event => {
+  const target = event.target as HTMLElement;
+  if (target.closest('.dialog-close')) {
+    $<HTMLDialogElement>('#dlg-appearance').close();
+    return;
+  }
+  const remove = target.closest<HTMLElement>('.theme-remove');
+  if (remove?.dataset.removeId) {
+    event.stopPropagation();
+    confirmRemoveTheme(remove.dataset.removeId);
+    return;
+  }
+  const card = target.closest<HTMLElement>('.theme-card');
+  if (card?.dataset.themeId) {
+    if (setTheme(card.dataset.themeId)) {
+      setThemeError('');
+      setText('theme-plugin-status', `已切换到「${getTheme(card.dataset.themeId)?.name ?? ''}」。`);
+    }
+    return;
+  }
+  const mode = target.closest<HTMLElement>('.segmented-item')?.dataset.mode;
+  if (mode === 'light' || mode === 'dark' || mode === 'system') setMode(mode);
+});
+
+$('#dlg-appearance').addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  if (pendingConfirm) {
+    event.preventDefault();
+    clearConfirm();
+    setText('theme-plugin-status', '已取消，没有改动已安装的主题。');
+  }
+});
+
+$('#accent-input').addEventListener('input', event => {
+  setAccent((event.target as HTMLInputElement).value);
+});
+$('#accent-clear').addEventListener('click', () => setAccent(null));
+$('#font-size-input').addEventListener('input', event => {
+  setFontSize(Number((event.target as HTMLInputElement).value));
+});
+$('#theme-confirm-accept').addEventListener('click', () => {
+  const run = pendingConfirm;
+  clearConfirm();
+  run?.();
+});
+
+$('#theme-confirm-cancel').addEventListener('click', () => {
+  clearConfirm();
+  setText('theme-plugin-status', '已取消，没有改动已安装的主题。');
+});
+
+$('#dlg-appearance').addEventListener('close', () => clearConfirm());
+
+$('#theme-reset').addEventListener('click', () => {
+  resetAppearance();
+  setThemeError('');
+  setText('theme-plugin-status', '已恢复默认外观：默认主题、跟随系统、无自定义强调色。');
+  const text = document.getElementById('theme-json') as HTMLTextAreaElement | null;
+  if (text) text.value = exportThemeJson();
+});
+$('#theme-export').addEventListener('click', () => {
+  const json = exportThemeJson();
+  downloadTheme(json);
+  const text = document.getElementById('theme-json') as HTMLTextAreaElement | null;
+  if (text) text.value = json;
+  setText('theme-plugin-status', '已生成主题包文件 twinlink-theme.json；如浏览器未出现下载，可复制下方 JSON 自行保存。');
+});
+$('#theme-copy').addEventListener('click', async () => {
+  const text = document.getElementById('theme-json') as HTMLTextAreaElement | null;
+  const json = text?.value.trim() || exportThemeJson();
+  const copied = await copyText(json);
+  setText('theme-plugin-status', copied ? '主题 JSON 已复制到剪贴板。' : '无法访问剪贴板，请手动选中下方 JSON 复制。');
+});
+$('#theme-import').addEventListener('click', () => {
+  const file = document.getElementById('theme-file') as HTMLInputElement | null;
+  if (file) file.click();
+});
+$('#theme-apply').addEventListener('click', () => {
+  const text = document.getElementById('theme-json') as HTMLTextAreaElement | null;
+  const raw = text?.value.trim() ?? '';
+  if (!raw) {
+    setThemeError('文本框是空的，请先粘贴主题包 JSON，或改用“导入主题包文件”。');
+    return;
+  }
+  setThemeError('');
+  applyThemePack(raw);
+});
+
+$('#theme-file').addEventListener('change', async event => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (file.size > MAX_THEME_BYTES) {
+    setThemeError('主题包超过 64 KiB，请确认这是主题 JSON 文件。');
+    input.value = '';
+    return;
+  }
+  try {
+    const raw = await file.text();
+    const text = document.getElementById('theme-json') as HTMLTextAreaElement | null;
+    if (text) text.value = raw;
+    applyThemePack(raw);
+  } catch {
+    setThemeError('无法读取该文件，请重新选择主题 JSON 文件。');
+  } finally {
+    input.value = '';
+  }
+});
+
+/* The theme runtime owns all state; this only mirrors it into the dialog. */
+subscribeTheme(() => renderAppearance());
+
 /* ---------- wiring ---------- */
+
 
 $$('[data-page]').forEach(button =>
   button.addEventListener('click', () => showPage((button as HTMLElement).dataset.page === 'files' ? 'files' : 'chat'))
 );
 $$('.show-files').forEach(button => button.addEventListener('click', () => showPage('files')));
 $$('.settings-open').forEach(button => button.addEventListener('click', openSettings));
+$$('.appearance-open').forEach(button => button.addEventListener('click', openAppearance));
+$$('.open-appearance').forEach(button =>
+  button.addEventListener('click', () => {
+    $<HTMLDialogElement>('#dlg-settings').close();
+    openAppearance();
+  })
+);
 $$('.settings-trigger').forEach(button => button.addEventListener('click', openSettings));
 $$('.room-open').forEach(button => button.addEventListener('click', openRoom));
 

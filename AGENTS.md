@@ -14,7 +14,11 @@ adapter. Large file data never crosses frontend IPC. Only explicitly selected
 files can be sent. Receiving never overwrites existing files or follows a remote
 path. Do not expose browsing of the peer's filesystem.
 
-DeepSeek UI task may edit only src/main.ts, src/styles.css and index.html.
+DeepSeek UI task may edit only src/main.ts, src/styles.css, src/themes.ts and index.html.
+The theme module is coordinated for the user's theme-plugin request: declarative
+JSON theme packages, a local registry and semantic tokens; no executable plugins.
+Codex has also reviewed the UI-only running-version display fix in src/updates.ts;
+update source restrictions and installation behavior must remain unchanged.
 Do not change src/api.ts, Rust, protocol or dependency files without coordination.
 Use local frontend-design and webapp-testing skills in .agents/skills as needed.
 

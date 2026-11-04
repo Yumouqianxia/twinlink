@@ -1,5 +1,17 @@
 # 客户端验证记录
 
+## 2026-11-04 DSH 风格界面与主题插件
+
+实现由 DeepSeek Harness 执行，Codex 独立复核及验收。四套内置主题、浅色／深色／系统跟随、强调色与字号、自定义 JSON 主题安装／导出／替换／删除及本地持久化已接入；业务 API 与 Rust core 未修改。新增 MIT 许可文本及 Tauri 打包资源。
+
+- Codex 最终 `pnpm build`、`cargo check -p twinlink --locked` 均通过；本轮 `cargo test -p twinlink-core --locked` 为 65 passed、0 failed、1 ignored（官方引擎测试默认不运行）。
+- 独立重跑 `scripts/test_file_ui.py`、`tests/updates_ui.py`、`tests/theme_plugins_ui.py` 均通过，无 pageerror。文件、备份及更新回归使用明确的 IPC 夹具，不启动真实安装或网络传输。
+- 主题测试使用真实 Vite 页面及真实主题运行时：系统明暗变化、固定模式、自定义强调色／字号、导出往返、用户主题刷新恢复、同 ID 替换即时重绘、内置保护、非法版本／颜色／未知项／原型字段／超大输入拒绝且原状态不变、坏本机存储回退。实际界面通过 file input 导入主题，测试应用内确认的接受／取消、删除回退、Blob 下载可解析为有效主题、粘贴 JSON 应用／错误提示及恢复默认。
+- 检查 1160×780 浅色和深色、880×620 深色及外观弹窗；没有文档横向溢出，弹窗内部纵向滚动。截图等待主题切换过渡完成；[深色工作区](images/workspace-dark.png)、[外观主题管理](images/theme-manager.png) 为浏览器“界面预览”截图，没有伪造对端或聊天。
+
+本轮未做原生 macOS／Windows 窗口、系统文件下载／选择器、实际更新安装或跨机联网验收。主题文件下载在 Chromium 浏览器中通过，桌面 WebView 下载行为尚未实机确认；界面同时提供 JSON 文本及复制出口。没有新建 tag 或发布安装包。
+
+
 ## 2026-11-04 数据备份与 P2P 文件
 
 从 GitHub `main` 的 `81af2ba` 拉取更新后实现，未更改服务器协议或容量，也未发布新 tag／安装包。

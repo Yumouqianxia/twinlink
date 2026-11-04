@@ -1,7 +1,16 @@
 import packageInfo from '../package.json';
 import { api, type UpdateInfo } from './api';
 
-export const versionLabel = `v${packageInfo.version} · 预览版`;
+const baseVersion = `v${packageInfo.version} · 预览版`;
+
+/** The running build is the authority; the packaged version only fills the gap before the first check. */
+export let versionLabel = baseVersion;
+
+export function setVersionLabel(current?: string | null) {
+  if (!current) return;
+  const clean = current.trim().replace(/^v/i, '');
+  if (clean) versionLabel = `v${clean} · 预览版`;
+}
 
 /** Checks may run in the background. Installation only follows an explicit click. */
 export function initializeUpdates(notify: (text: string) => void) {
@@ -10,9 +19,16 @@ export function initializeUpdates(notify: (text: string) => void) {
   const status = document.querySelector<HTMLElement>('#update-status')!;
   const notes = document.querySelector<HTMLElement>('#update-notes')!;
   const progress = document.querySelector<HTMLProgressElement>('#update-progress')!;
+  const versionEl = document.querySelector<HTMLElement>('.update-version');
   let available: UpdateInfo | null = null;
   let busy = false;
   let installing = false;
+
+  function paintVersion() {
+    if (versionEl) versionEl.textContent = versionLabel;
+  }
+
+  paintVersion();
 
   async function checkNow(automatic = false) {
     if (busy) return;
@@ -25,6 +41,8 @@ export function initializeUpdates(notify: (text: string) => void) {
     status.textContent = '正在连接 GitHub 检查更新…';
     try {
       const result = await api.checkUpdate();
+      setVersionLabel(result.currentVersion);
+      paintVersion();
       if (result.version) {
         available = result;
         install.textContent = `更新至 v${result.version} 并重启`;

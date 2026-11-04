@@ -3,9 +3,11 @@ Run against a local dev server with Python 3 + playwright and Chromium installed
 """
 import json
 import os
+from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 URL = os.environ.get('TWINLINK_TEST_URL', 'http://127.0.0.1:1420')
+PACKAGE_VERSION = json.loads((Path(__file__).resolve().parents[1] / 'package.json').read_text())['version']
 SNAPSHOT = {'profile': {'displayName': 'Test device', 'downloadDir': ''}, 'connection': 'disconnected', 'peerName': None, 'messages': [], 'transfers': [], 'engineAvailable': True, 'preview': False, 'paused': False, 'reconnect': None, 'server': None, 'room': None, 'route': 'unknown', 'mailbox': {'state': 'notConfigured', 'message': None, 'pending': 0}}
 INIT = r"""
 window.isTauri = true;
@@ -13,6 +15,7 @@ window.testCalls = [];
 window.testCallbacks = new Map();
 window.testEvents = {};
 window.__TAURI_INTERNALS__ = {
+ metadata: {currentWindow: {label: 'main'}, currentWebview: {label: 'main'}},
  transformCallback(cb) { const id = window.testCallbacks.size + 1; window.testCallbacks.set(id, cb); return id; },
  unregisterCallback() {},
  invoke(cmd, args) {
@@ -45,7 +48,7 @@ with sync_playwright() as p:
         page.goto(URL)
         page.wait_for_load_state('networkidle')
         page.locator('.nav-item.settings-open').click()
-        expect(page.locator('.update-version')).to_have_text('v0.0.1 · 预览版')
+        expect(page.locator('.update-version')).to_have_text(f"v{PACKAGE_VERSION if mode == 'error' else '0.0.1'} · 预览版")
         if mode == 'latest':
             expect(page.locator('#update-status')).to_contain_text('最新预览版')
             expect(page.locator('#install-update')).to_be_hidden()
