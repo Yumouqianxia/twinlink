@@ -1,5 +1,18 @@
 # 客户端验证记录
 
+## 2026-11-04 v0.0.3 发布完成与公开产物验收
+
+[Release 工作流](https://github.com/Yumouqianxia/twinlink/actions/runs/41842714157) 的 macOS Apple Silicon、macOS Intel、Windows x64 构建及发布全部成功，包含 Windows 正常安装启动、下载目录异常和损坏数据库三项检查。[v0.0.3](https://github.com/Yumouqianxia/twinlink/releases/tag/v0.0.3) 已公开且标记为预发布、非草稿；不可变 tag 指向源码 `e24a8d20c7c92a2fb0e3c77d138622010105df6d`。
+
+从公开 Release 下载全部 8 个产物后独立验证：
+
+- 三套安装/更新包、三份签名、`latest.json` 和 `SHA256SUMS.txt` 齐全，实际大小与 SHA-256 均匹配 GitHub 资产元数据；三套包的 SHA-256 也匹配校验文件。
+- 使用应用内置更新公钥和相同的 `minisign-verify 0.3.0` 库，三套包的密码学签名均通过，签名元数据均绑定版本 `0.0.3`；篡改包字节或签名中的版本均被拒绝。只读取公开产物与公钥，没有使用签名私钥。
+- `updates` 分支的 `latest.json` 与 Release 清单完全一致，版本为 `0.0.3`，三平台 URL 和签名正确，仍固定到本仓库 GitHub Release。
+- 两套 Mac 压缩包内的实际 bundle 版本均为 `0.0.3`，Mach-O 架构分别为 arm64 和 x86_64，均包含 EasyTier 与 Harness MIT 许可文本。
+
+验收未在用户电脑安装或触发更新。Windows 安装检查在一次性 GitHub runner 执行；原生双机图片预览、跨公网 EasyTier 连接、macOS 人工界面及实际更新安装仍待独立实测，不以构建或签名通过代替这些结论。
+
 ## 2026-11-04 v0.0.3 发布准备
 
 本轮将主题包、数据备份、P2P/离线文件、聊天附件和图片预览纳入 v0.0.3 预发布版。附件源码 `5ea5b67` 的 [Windows/macOS Check](https://github.com/Yumouqianxia/twinlink/actions/runs/41824235365) 已通过；该检查不包含原生图片预览人工验收。
