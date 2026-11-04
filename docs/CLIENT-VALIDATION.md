@@ -10,7 +10,7 @@
 - 原生 EasyTier 配置检查显式执行官方引擎 ignored 测试，确认 `--p2p-only true` 参数被接受并创建 loopback 转发监听。这个参数的语义见 [EasyTier 官方说明](https://easytier.cn/guide/network/p2p-optimize.html)；没有自己实现打洞。
 - `scripts/test_file_ui.py` 用 Playwright 在 1160×780 下检查拖拽反馈、多文件去重、打开对话框时不发送拖入文件、自动接收开关、备份二次确认与导入结果；此部分明确使用 IPC／原生拖拽事件夹具。另以真实浏览器预览检查预览提示及拖拽拒绝，没有把夹具结果当作原生系统拖拽验收。
 
-本机 `pnpm build`、`cargo test -p twinlink-core --locked`（65 passed、0 failed、1 ignored）、`cargo test -p twinlink --locked`（4 passed）及 `cargo check -p twinlink --locked` 通过；另显式执行官方引擎配置测试（1 passed）。双向旧版本握手兼容回归也已包含并通过，云端平台结果以本轮源码 CI 为准。
+本机 `pnpm build`、`cargo test -p twinlink-core --locked`（65 passed、0 failed、1 ignored）、`cargo test -p twinlink --locked`（4 passed）及 `cargo check -p twinlink --locked` 通过；另显式执行官方引擎配置测试（1 passed）。双向旧版本握手兼容回归也已包含并通过。源码提交 `d86f380` 的 [Windows/macOS Check](https://github.com/Yumouqianxia/twinlink/actions/runs/41792847000) 两个平台均通过前端构建、核心／适配层测试及 Rust 检查。
 
 本轮没有进行两台不同电脑的真实 NAT 打洞、Windows/macOS 原生拖拽、Windows 安装包或跨运营商传输验收。无法打洞但双方可访问信箱时仍使用离线信箱；大文件需要建立直连后发送。原生系统拖拽和跨机直连仍需双端实测。
 
