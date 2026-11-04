@@ -1,6 +1,6 @@
 # 应用更新与 GitHub 发布
 
-v0.0.2 是非正式预发布版，包含 Windows 下载目录异常时的启动修复。若旧版无法启动，请从 Release 页面下载完整安装包手动升级。更新覆盖完整的 Tauri 应用（前端、Rust 和独立引擎），需要重启；不是在运行中替换 Rust 或加载远程网页代码。
+v0.0.3 是非正式预发布版，加入主题包、备份、P2P 文件传输与聊天附件/图片预览，并保留 Windows 启动修复。若旧版无法启动，请从 Release 页面下载完整安装包手动升级。更新覆盖完整的 Tauri 应用（前端、Rust 和独立引擎），需要重启；不是在运行中替换 Rust 或加载远程网页代码。
 
 ## 使用
 
@@ -23,9 +23,9 @@ v0.0.2 是非正式预发布版，包含 Windows 下载目录异常时的启动�
 
 ## 发布下一版
 
-1. 同步修改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `crates/twinlink-core/Cargo.toml` 的版本，例如 `0.0.2`；更新 `Cargo.lock` 与 `docs/RELEASE-NOTES.md`。
+1. 同步修改 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `crates/twinlink-core/Cargo.toml` 的版本，例如 `0.0.3`；更新 `Cargo.lock` 与 `docs/RELEASE-NOTES.md`。
 2. 执行 `pnpm build`、`cargo test -p twinlink-core --locked`、`cargo test -p twinlink --locked`、`cargo check -p twinlink --locked`。
-3. 提交并推送源码，再推送 `v0.0.2` 标签。`Release` 工作流为 macOS Apple Silicon、macOS Intel 和 Windows x64 分别构建。
+3. 提交并推送源码，再推送 `v0.0.3` 标签。`Release` 工作流为 macOS Apple Silicon、macOS Intel 和 Windows x64 分别构建。
 4. 三个平台全部成功后，工作流创建草稿 Release、上传签名包与 SHA256SUMS、发布，然后才推进 `updates/latest.json`。
 
 发布脚本验证四处版本一致、标签匹配、包哈希及来源，并拒绝覆盖已发布版本或把更新清单回退。失败的工作流不推进更新源。也可在 Actions 手动运行 Release，选择要发布的分支或 tag，并输入与源码版本匹配的版本标签；工作流固定检出触发时的提交，全部构建和 Windows 安装检查通过后才创建尚不存在的标签。既有标签必须指向同一源码提交，绝不自动移动。

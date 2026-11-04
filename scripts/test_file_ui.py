@@ -4,7 +4,6 @@ Run against Vite with Python Playwright installed:
 Real TCP and mailbox file bytes are covered by Rust tests, not these fixtures.
 """
 import sys
-from playwright.sync_api import sync_playwright, expect
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:1420"
 FIXTURE = r'''
@@ -40,57 +39,64 @@ export const api = {
 };
 '''
 
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page(viewport={"width": 1160, "height": 780})
-    errors = []
-    page.on("pageerror", lambda error: errors.append(str(error)))
-    page.route("**/src/api.ts*", lambda route: route.fulfill(status=200, content_type="application/javascript", body=FIXTURE))
-    page.goto(BASE)
-    page.wait_for_load_state("networkidle")
-    page.wait_for_function("typeof window.__nativeDrop === 'function'")
-    page.evaluate("window.__nativeDrop({type:'enter',paths:['/fixture/拖拽.txt']})")
-    expect(page.locator("#file-drop-hint")).to_be_visible()
-    page.evaluate("window.__nativeDrop({type:'leave'})")
-    expect(page.locator("#file-drop-hint")).to_be_hidden()
-    page.evaluate("window.__nativeDrop({type:'drop',paths:['/fixture/拖拽.txt','/fixture/second.txt','/fixture/拖拽.txt']})")
-    page.wait_for_function("window.__calls.filter(c=>c.method==='offerFile').length === 2")
-    expect(page.locator(".transfers")).to_contain_text("拖拽.txt")
-    expect(page.locator(".transfers")).to_contain_text("P2P 直连")
-    page.locator(".settings-open").first.click()
-    expect(page.locator("#dlg-settings")).to_be_visible()
-    page.evaluate("window.__nativeDrop({type:'drop',paths:['/fixture/private-backup.json']})")
-    assert page.evaluate("window.__calls.filter(c=>c.method==='offerFile').length") == 2
-    expect(page.locator("[name=autoAcceptFiles]")).not_to_be_checked()
-    page.locator("[name=autoAcceptFiles]").check()
-    page.locator("#settings-form button[type=submit]").click()
-    page.wait_for_function("window.__calls.some(c=>c.method==='saveProfile')")
-    assert page.evaluate("window.__calls.find(c=>c.method==='saveProfile').args.autoAcceptFiles") is True
-    page.locator(".settings-open").first.click()
-    page.locator("#export-data").click()
-    expect(page.locator("#backup-status")).to_contain_text("备份已保存")
-    page.locator("#import-data").click()
-    expect(page.locator("#import-data")).to_have_text("确认导入并暂停连接")
-    assert not page.evaluate("window.__calls.some(c=>c.method==='importData')")
-    page.locator("#cancel-import").click()
-    expect(page.locator("#import-data")).to_have_text("选择备份导入")
-    page.locator("#import-data").click()
-    page.locator("#import-data").click()
-    expect(page.locator("#backup-status")).to_contain_text("新增 205 条聊天、2 条文件记录")
-    expect(page.locator("[name=autoAcceptFiles]")).not_to_be_checked()
-    calls = page.evaluate("window.__calls.map(c=>c.method)")
-    assert calls.index("pause") < calls.index("importData")
-    assert not errors, errors
-    page.screenshot(path="/tmp/twinlink-file-settings-qa.png", full_page=True)
-    page.close()
-    # Production browser preview: no mocked desktop APIs or successful transfers.
-    preview = browser.new_page()
-    preview.on("pageerror", lambda error: errors.append(str(error)))
-    preview.goto(BASE)
-    preview.wait_for_load_state("networkidle")
-    expect(preview.locator(".preview-strip")).to_be_visible()
-    preview.evaluate("document.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true}))")
-    expect(preview.locator(".toast")).to_contain_text("拖拽发送文件需要使用桌面应用")
-    assert not errors, errors
-    browser.close()
-print("PASS native-drop wiring, deduplication, dialog exclusion, explicit auto-accept, backup confirmation, merge result and real preview guard (IPC fixtures; no native GUI claim)")
+def main():
+    from playwright.sync_api import sync_playwright, expect
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1160, "height": 780})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.route("**/src/api.ts*", lambda route: route.fulfill(status=200, content_type="application/javascript", body=FIXTURE))
+        page.goto(BASE)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_function("typeof window.__nativeDrop === 'function'")
+        page.evaluate("window.__nativeDrop({type:'enter',paths:['/fixture/拖拽.txt']})")
+        expect(page.locator("#file-drop-hint")).to_be_visible()
+        page.evaluate("window.__nativeDrop({type:'leave'})")
+        expect(page.locator("#file-drop-hint")).to_be_hidden()
+        page.evaluate("window.__nativeDrop({type:'drop',paths:['/fixture/拖拽.txt','/fixture/second.txt','/fixture/拖拽.txt']})")
+        page.wait_for_function("window.__calls.filter(c=>c.method==='offerFile').length === 2")
+        expect(page.locator(".transfers")).to_contain_text("拖拽.txt")
+        expect(page.locator(".transfers")).to_contain_text("P2P 直连")
+        page.locator(".settings-open").first.click()
+        expect(page.locator("#dlg-settings")).to_be_visible()
+        page.evaluate("window.__nativeDrop({type:'drop',paths:['/fixture/private-backup.json']})")
+        assert page.evaluate("window.__calls.filter(c=>c.method==='offerFile').length") == 2
+        expect(page.locator("[name=autoAcceptFiles]")).not_to_be_checked()
+        page.locator("[name=autoAcceptFiles]").check()
+        page.locator("#settings-form button[type=submit]").click()
+        page.wait_for_function("window.__calls.some(c=>c.method==='saveProfile')")
+        assert page.evaluate("window.__calls.find(c=>c.method==='saveProfile').args.autoAcceptFiles") is True
+        page.locator(".settings-open").first.click()
+        page.locator("#export-data").click()
+        expect(page.locator("#backup-status")).to_contain_text("备份已保存")
+        page.locator("#import-data").click()
+        expect(page.locator("#import-data")).to_have_text("确认导入并暂停连接")
+        assert not page.evaluate("window.__calls.some(c=>c.method==='importData')")
+        page.locator("#cancel-import").click()
+        expect(page.locator("#import-data")).to_have_text("选择备份导入")
+        page.locator("#import-data").click()
+        page.locator("#import-data").click()
+        expect(page.locator("#backup-status")).to_contain_text("新增 205 条聊天、2 条文件记录")
+        expect(page.locator("[name=autoAcceptFiles]")).not_to_be_checked()
+        calls = page.evaluate("window.__calls.map(c=>c.method)")
+        assert calls.index("pause") < calls.index("importData")
+        assert not errors, errors
+        page.screenshot(path="/tmp/twinlink-file-settings-qa.png", full_page=True)
+        page.close()
+        # Production browser preview: no mocked desktop APIs or successful transfers.
+        preview = browser.new_page()
+        preview.on("pageerror", lambda error: errors.append(str(error)))
+        preview.goto(BASE)
+        preview.wait_for_load_state("networkidle")
+        expect(preview.locator(".preview-strip")).to_be_visible()
+        preview.evaluate("document.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true}))")
+        expect(preview.locator(".toast")).to_contain_text("拖拽发送文件需要使用桌面应用")
+        assert not errors, errors
+        browser.close()
+    print("PASS native-drop wiring, deduplication, dialog exclusion, explicit auto-accept, backup confirmation, merge result and real preview guard (IPC fixtures; no native GUI claim)")
+
+
+if __name__ == "__main__":
+    main()

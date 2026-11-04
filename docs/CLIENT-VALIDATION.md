@@ -1,5 +1,15 @@
 # 客户端验证记录
 
+## 2026-11-04 v0.0.3 发布准备
+
+本轮将主题包、数据备份、P2P/离线文件、聊天附件和图片预览纳入 v0.0.3 预发布版。附件源码 `5ea5b67` 的 [Windows/macOS Check](https://github.com/Yumouqianxia/twinlink/actions/runs/41824235365) 已通过；该检查不包含原生图片预览人工验收。
+
+版本更新后本机 `pnpm build`、`cargo test -p twinlink-core --locked`（71 passed、0 failed、1 ignored）、`cargo test -p twinlink --locked`（5 passed）及 `cargo check -p twinlink --locked` 均通过。四处版本与 Cargo.lock 同步为 0.0.3，发布标签校验通过；本机 Python 3.9 使用 pip 自带 TOML 解析器兼容执行标签校验，Actions 仍使用 Python 3.12。
+
+发布前发现 `unittest discover` 会导入并立即执行独立浏览器回归脚本，导致没有 Playwright 的 runner 失败；现将 Playwright 导入及执行放进 `main()`，只在直接运行脚本时启动浏览器。无 Playwright 的系统 Python 执行发布保护测试为 4 passed，独立文件界面回归也通过。
+
+发布流程将构建 macOS Apple Silicon、macOS Intel 和 Windows x64 三套签名更新产物；全部构建与 Windows 安装启动检查通过后才发布并推进 GitHub 更新通道。跨公网双机、原生图片预览和选择器仍待人工实测；本条记录不将打包成功等同于这些功能已获真机验收。
+
 ## 2026-11-04 DSH 风格界面与主题插件
 
 实现由 DeepSeek Harness 执行，Codex 独立复核及验收。四套内置主题、浅色／深色／系统跟随、强调色与字号、自定义 JSON 主题安装／导出／替换／删除及本地持久化已接入；业务 API 与 Rust core 未修改。新增 MIT 许可文本及 Tauri 打包资源。

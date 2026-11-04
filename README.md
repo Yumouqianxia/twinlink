@@ -1,16 +1,16 @@
 # 同频 / TwinLink
 
-当前版本：**v0.0.2 预发布版，非正式版**。
+当前版本：**v0.0.3 预发布版，非正式版**。
 
-[下载 v0.0.2](https://github.com/Yumouqianxia/twinlink/releases/tag/v0.0.2) · [更新与发布说明](docs/UPDATES.md)
+[下载 v0.0.3](https://github.com/Yumouqianxia/twinlink/releases/tag/v0.0.3) · [更新与发布说明](docs/UPDATES.md)
 
-v0.0.2 包含 Windows 下载目录异常时的启动修复、启动失败提示与本地日志，以及 macOS 图标修正。若 v0.0.1 已无法启动，请下载新版安装包手动升级；安装包与聊天数据分开保存。
+v0.0.3 加入可安装的主题包、数据备份、在线 P2P 文件传输、拖拽发送，以及聊天中的附件记录和图片预览。保留 Windows 启动修复与 macOS 图标边距修正；安装包与聊天数据分开保存。
 
 两个人使用的 Windows/macOS 桌面聊天与文件传输应用原型。采用 Tauri 2、
 TypeScript/Vite、Rust 和独立分发的 EasyTier 2.6.4。EasyTier 负责网络发现、
 打洞与中继；项目不自行实现 NAT 穿透，也未复制 Astral 的源码或界面。
 
-`main` 已加入数据备份、在线 P2P 文件传输、离线暂存、可选自动接收和原生拖拽。此轮源码修改尚未发布安装包；两端更新源码后测试，已发布安装包不包含这些新增功能。
+两端均更新到 v0.0.3 后可使用本轮新增功能。图片预览需本地文件仍存在，收到的图片须接收完成；备份只保存记录和配置，不包含附件本体。详见[附件说明](docs/ATTACHMENTS.md)与[主题包说明](docs/THEMES.md)。
 
 ## 配对和使用
 
