@@ -59,6 +59,21 @@ pub struct Transfer {
     pub via: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Creation time in milliseconds. 0 means "recording predates timestamps";
+    /// the UI must then fall back to another ordering source instead of
+    /// pretending the file was transferred now.
+    #[serde(default)]
+    pub timestamp: u64,
+}
+
+impl Transfer {
+    /// Keep the original creation time across progress/status updates.
+    pub fn stamp_with(mut self, previous: Option<&Transfer>) -> Self {
+        if let Some(timestamp) = previous.map(|v| v.timestamp).filter(|v| *v != 0) {
+            self.timestamp = timestamp;
+        }
+        self
+    }
 }
 
 /// Retry countdown shown by the UI while the supervisor backs off. Attempt 1 is

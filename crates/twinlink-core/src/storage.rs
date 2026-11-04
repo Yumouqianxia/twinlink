@@ -24,10 +24,66 @@ fn save_message_tx(tx: &rusqlite::Transaction<'_>, room: &str, message: &Message
 }
 
 fn save_transfer_tx(tx: &rusqlite::Transaction<'_>, room: &str, transfer: &Transfer) -> Result<()> {
+    // Progress updates carry no timestamp of their own; keep the original
+    // creation time instead of restamping the record on every chunk.
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT value FROM transfers WHERE room=?1 AND id=?2",
+            params![room, transfer.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let previous: Option<Transfer> = previous.and_then(|raw| serde_json::from_str(&raw).ok());
+    let stored = transfer.clone().stamp_with(previous.as_ref());
     tx.execute(
         "INSERT INTO transfers(room,id,value) VALUES(?1,?2,?3) ON CONFLICT(room,id) DO UPDATE SET value=excluded.value",
-        params![room, transfer.id, serde_json::to_string(transfer)?],
+        params![room, transfer.id, serde_json::to_string(&stored)?],
     )?;
+    Ok(())
+}
+
+/// Older builds stored file records without a creation time. Give those rows
+/// the timestamp of the upload/download metadata they were created from; rows
+/// with no surviving source keep `timestamp == 0` instead of pretending they
+/// happened now.
+fn backfill_transfer_timestamps(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let rows = {
+        let mut stmt = tx.prepare("SELECT room,id,value FROM transfers")?;
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        mapped.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (room, id, raw) in rows {
+        let Ok(mut transfer) = serde_json::from_str::<Transfer>(&raw) else {
+            continue;
+        };
+        if transfer.timestamp != 0 {
+            continue;
+        }
+        let created_at: Option<u64> = tx
+            .query_row(
+                "SELECT created_at FROM uploads WHERE room=?1 AND file_id=?2
+                 UNION ALL
+                 SELECT created_at FROM downloads WHERE room=?1 AND file_id=?2
+                 LIMIT 1",
+                params![room, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(created_at) = created_at else {
+            continue;
+        };
+        transfer.timestamp = created_at;
+        tx.execute(
+            "UPDATE transfers SET value=?3 WHERE room=?1 AND id=?2",
+            params![room, id, serde_json::to_string(&transfer)?],
+        )?;
+    }
     Ok(())
 }
 
@@ -77,6 +133,7 @@ impl Store {
         if !columns.iter().any(|name| name == "final_path") {
             tx.execute_batch("ALTER TABLE downloads ADD COLUMN final_path TEXT;")?;
         }
+        backfill_transfer_timestamps(&tx)?;
         tx.commit()?;
         Ok(Self(Mutex::new(conn)))
     }
@@ -163,13 +220,15 @@ impl Store {
     }
 
     pub fn save_transfer(&self, room: &str, transfer: &Transfer) -> Result<()> {
-        self.0.lock().unwrap().execute(
-            "INSERT INTO transfers(room,id,value) VALUES(?1,?2,?3) ON CONFLICT(room,id) DO UPDATE SET value=excluded.value",
-            params![room, transfer.id, serde_json::to_string(transfer)?],
-        )?;
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        save_transfer_tx(&tx, room, transfer)?;
+        tx.commit()?;
         Ok(())
     }
 
+    /// Preserve insertion order as a fallback for legacy records that still
+    /// have an unknown creation time after metadata backfill.
     pub fn transfers(&self, room: &str) -> Result<Vec<Transfer>> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn.prepare("SELECT value FROM transfers WHERE room=?1 ORDER BY rowid ASC")?;

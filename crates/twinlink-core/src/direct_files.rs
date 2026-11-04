@@ -65,6 +65,10 @@ impl Core {
             .context("文件名不是有效 UTF-8")?
             .to_owned();
         files::validate_name(&name)?;
+        // Resolve the user's selection once and transfer that very file. A
+        // selected symlink keeps working here, while the stored path is a
+        // regular file, so preview authorization can refuse symlinks outright.
+        let path = &path.canonicalize().context("无法读取所选文件")?;
         // No P2P size cap and no whole-file buffer or encrypted spool copy.
         let (size, hash) = files::hash_file(path).await?;
         let room = selection.spec()?.room_id;
@@ -86,6 +90,7 @@ impl Core {
             status: "waiting".into(),
             via: Some("direct".into()),
             error: None,
+            timestamp: now(),
         };
         self.store.insert_upload(
             &UploadRow {
@@ -99,7 +104,7 @@ impl Core {
                 chunk_count: 0,
                 status: "directWaiting".into(),
                 error: None,
-                created_at: now(),
+                created_at: transfer.timestamp,
             },
             &transfer,
         )?;
@@ -154,6 +159,7 @@ impl Core {
             status: "offered".into(),
             via: Some("direct".into()),
             error: None,
+            timestamp: now(),
         };
         self.store.insert_offer(
             &DownloadRow {
@@ -168,7 +174,7 @@ impl Core {
                 temp_path: None,
                 next_index: 0,
                 error: None,
-                created_at: now(),
+                created_at: transfer.timestamp,
                 final_path: None,
             },
             &transfer,

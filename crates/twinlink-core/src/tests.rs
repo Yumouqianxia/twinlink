@@ -3,6 +3,102 @@ use crate::pairing::{test_server, SERVER_PREFIX};
 
 const TEST_PREFIX: &str = "twinlink-test-prefix";
 
+#[cfg(unix)]
+#[tokio::test]
+async fn selected_symlink_is_bound_before_invitation_for_both_transports() {
+    let (left, right, left_dir, right_dir, cancel) = pair().await;
+    let original = left_dir.path().join("original.txt");
+    let other = left_dir.path().join("other.txt");
+    let selected = left_dir.path().join("selected.txt");
+    std::fs::write(&original, b"original selection").unwrap();
+    std::fs::write(&other, b"replacement target").unwrap();
+    std::os::unix::fs::symlink(&original, &selected).unwrap();
+    let offered = left.offer_file(selected.clone()).await.unwrap();
+    let room = left.current_room_id().await.unwrap();
+    assert_eq!(offered.name, "selected.txt");
+    assert_eq!(PathBuf::from(left.store.upload(&room, &offered.id).unwrap().unwrap().source_path), original.canonicalize().unwrap());
+    std::fs::remove_file(&selected).unwrap();
+    std::os::unix::fs::symlink(&other, &selected).unwrap();
+    wait_transfer(&right, 0, "offered").await;
+    right.accept_file(Uuid::parse_str(&offered.id).unwrap()).await.unwrap();
+    wait_transfer(&right, 0, "completed").await;
+    assert_eq!(std::fs::read(right_dir.path().join("selected.txt")).unwrap(), b"original selection");
+    let offline = left.mailbox_offer_file(selected).await.unwrap();
+    assert_eq!(offline.name, "selected.txt");
+    assert_eq!(PathBuf::from(left.store.upload(&room, &offline.id).unwrap().unwrap().source_path), other.canonicalize().unwrap());
+    cancel.cancel();
+}
+
+#[test]
+fn legacy_transfer_times_backfill_and_progress_cannot_restamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite");
+    let store = storage::Store::open(&path).unwrap();
+    let id = Uuid::new_v4().to_string();
+    let transfer: Transfer = serde_json::from_value(serde_json::json!({"id":id,"name":"old.png","size":1,"transferred":0,"outgoing":true,"status":"waiting","error":null})).unwrap();
+    assert_eq!(transfer.timestamp, 0);
+    store.insert_upload(&storage::UploadRow { room:"legacy".into(),file_id:id.clone(),source_path:"/fixture/old.png".into(),name:"old.png".into(),size:1,hash:"a".repeat(64),encrypted_size:0,chunk_count:0,status:"waiting".into(),error:None,created_at:47 }, &transfer).unwrap();
+    drop(store);
+    let store = storage::Store::open(&path).unwrap();
+    let mut transfer = store.transfer("legacy", &id).unwrap().unwrap();
+    assert_eq!(transfer.timestamp, 47);
+    transfer.timestamp = 999;
+    transfer.transferred = 1;
+    store.save_transfer("legacy", &transfer).unwrap();
+    assert_eq!(store.transfer("legacy", &id).unwrap().unwrap().timestamp, 47);
+}
+
+#[tokio::test]
+async fn image_previews_require_local_file_and_consent_and_keep_timeline_time() {
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=").unwrap();
+    let (left, right, left_dir, _right_dir, cancel) = pair().await;
+    let room = left.current_room_id().await.unwrap();
+    let path = left_dir.path().join("preview.png");
+    std::fs::write(&path, &png).unwrap();
+    let offered = left.offer_file(path.clone()).await.unwrap();
+    assert!(offered.timestamp > 0);
+    assert_eq!(preview::preview_image(&left, &room, &offered.id).await.unwrap().bytes, png);
+    wait_transfer(&right, 0, "offered").await;
+    assert!(preview::preview_image(&right, &room, &offered.id).await.is_err());
+    right.accept_file(Uuid::parse_str(&offered.id).unwrap()).await.unwrap();
+    wait_transfer(&right, 0, "completed").await;
+    wait_transfer(&left, 0, "completed").await;
+    assert_eq!(preview::preview_image(&right, &room, &offered.id).await.unwrap().bytes, png);
+    assert_eq!(left.snapshot().await.unwrap().transfers[0].timestamp, offered.timestamp);
+    assert!(preview::preview_image(&left, &"b".repeat(64), &offered.id).await.is_err());
+    assert!(preview::preview_image(&left, &room, "../../bad").await.is_err());
+    let backup = left_dir.path().join("preview-backup.json");
+    left.export_data(backup.clone()).await.unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let fresh = Core::open(target.path().join("data"), target.path().into(), PathBuf::new()).unwrap();
+    fresh.import_data(backup).await.unwrap();
+    assert_eq!(fresh.snapshot().await.unwrap().transfers[0].timestamp, offered.timestamp);
+    assert!(preview::preview_image(&fresh, &room, &offered.id).await.is_err(), "backups contain no file access capability");
+    std::fs::write(&path, b"<svg><script>alert(1)</script></svg>").unwrap();
+    assert!(preview::preview_image(&left, &room, &offered.id).await.is_err());
+    let mut large_dimensions = png.clone();
+    large_dimensions[16..20].copy_from_slice(&100_000u32.to_be_bytes());
+    std::fs::write(&path, large_dimensions).unwrap();
+    assert!(preview::preview_image(&left, &room, &offered.id).await.is_err());
+    std::fs::File::create(&path).unwrap().set_len(preview::MAX_PREVIEW_BYTES + 1).unwrap();
+    assert!(preview::preview_image(&left, &room, &offered.id).await.is_err());
+    #[cfg(unix)] {
+        let download = right.store.download(&room, &offered.id).unwrap().unwrap();
+        let published = PathBuf::from(download.final_path.unwrap());
+        let original = published.with_extension("original.png");
+        std::fs::rename(&published, &original).unwrap();
+        std::os::unix::fs::symlink(&original, &published).unwrap();
+        assert!(preview::preview_image(&right, &room, &offered.id).await.is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&original, &path).unwrap();
+        assert!(preview::preview_image(&left, &room, &offered.id).await.is_err());
+    }
+    left.create_room().await.unwrap();
+    assert!(preview::preview_image(&left, &room, &offered.id).await.is_err());
+    cancel.cancel();
+}
+
 /// Open two Cores and pipe a chat session through a real loopback socket, without
 /// the supervisor or EasyTier. The derived addresses are irrelevant here; only
 /// the shared secret must match on both sides.
@@ -1155,7 +1251,7 @@ async fn new_room_resets_auto_accept_and_completion_can_overtake_fallback() {
     let room = core.current_room_id().await.unwrap();
     let id = Uuid::new_v4().to_string();
     let transfer = Transfer { id: id.clone(), name: "receipt.txt".into(), size: 5, transferred: 5,
-        outgoing: true, status: "waiting".into(), via: Some("direct".into()), error: None };
+        outgoing: true, status: "waiting".into(), via: Some("direct".into()), error: None, timestamp: now() };
     core.store.insert_upload(&storage::UploadRow { room: room.clone(), file_id: id.clone(),
         source_path: dir.path().join("receipt.txt").to_string_lossy().into_owned(), name: transfer.name.clone(), size: 5,
         hash: "a".repeat(64), encrypted_size: 0, chunk_count: 0, status: "directFinishing".into(), error: None, created_at: now() }, &transfer).unwrap();

@@ -45,7 +45,7 @@ with sync_playwright() as p:
     page = browser.new_page(viewport={"width": 1160, "height": 780})
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
-    page.route("**/src/api.ts", lambda route: route.fulfill(status=200, content_type="application/javascript", body=FIXTURE))
+    page.route("**/src/api.ts*", lambda route: route.fulfill(status=200, content_type="application/javascript", body=FIXTURE))
     page.goto(BASE)
     page.wait_for_load_state("networkidle")
     page.wait_for_function("typeof window.__nativeDrop === 'function'")

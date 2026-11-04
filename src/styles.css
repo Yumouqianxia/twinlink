@@ -776,6 +776,20 @@ svg.i {
   margin-top: 18px;
 }
 
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.empty-actions .btn {
+  margin-top: 0;
+  min-height: 38px;
+}
+
 /* connection motif: a two-device link diagram that reports state */
 
 .motif {
@@ -1031,6 +1045,42 @@ svg.i {
   gap: 8px;
   padding: 4px 8px 8px;
 }
+
+.attachment-tools { display: flex; align-items: center; gap: 2px; }
+.attachment-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--tl-radius-sm);
+  color: var(--tl-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.attachment-tool:hover:not(:disabled) { color: var(--tl-ink); background: var(--tl-hover); }
+.attachment-tool:disabled { opacity: .45; cursor: not-allowed; }
+.attachment-tool:focus-visible, .image-thumbnail:focus-visible { outline: 2px solid var(--tl-accent); outline-offset: 2px; }
+.attachment-bubble { width: min(440px, 100%); border: 1px solid var(--tl-line); border-radius: var(--tl-radius); background: var(--tl-surface); overflow: hidden; }
+.attachment-msg.out .attachment-bubble { border-color: var(--tl-accent-line); }
+.attachment-card .transfer { margin: 0; border: 0; border-radius: 0; background: transparent; padding: 12px; flex-wrap: wrap; gap: 10px; }
+.attachment-card .transfer-body { min-width: 0; flex-basis: 200px; }
+.attachment-card .transfer-actions { margin-left: auto; }
+.attachment-card .transfer-name { overflow-wrap: anywhere; }
+.attachment-note, .image-fallback { margin: 0; padding: 0 12px 12px; font-size: 12px; color: var(--tl-muted); }
+.image-fallback { padding-top: 12px; }
+.image-thumbnail { display: block; width: 100%; padding: 0; border: 0; background: var(--tl-surface-alt); cursor: zoom-in; }
+.image-thumbnail img { display: block; width: 100%; height: 190px; object-fit: contain; }
+.image-dialog { width: min(960px, calc(100vw - 48px)); max-width: none; padding: 0; background: var(--tl-surface); color: var(--tl-ink); }
+.image-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--tl-line); }
+.image-dialog-head h2 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.image-dialog-stage { display: grid; place-items: center; min-height: 180px; padding: 16px; }
+.image-dialog-stage img { display: block; max-width: 100%; max-height: calc(100vh - 180px); object-fit: contain; }
+.image-dialog-stage p { color: var(--tl-muted); }
 
 .composer-hint {
   margin-left: auto;
@@ -1830,6 +1880,9 @@ progress::-moz-progress-bar {
   .empty .btn {
     margin-top: 14px;
   }
+
+  .empty-actions { margin-top: 14px; }
+  .empty-actions .btn { margin-top: 0; }
 
   .thread-inner {
     padding-top: 12px;

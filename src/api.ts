@@ -1,4 +1,4 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
@@ -32,6 +32,8 @@ export interface Transfer {
   transferred: number;
   outgoing: boolean;
   status: TransferStatus;
+  /** Milliseconds since epoch; 0/absent for legacy records of unknown time. */
+  timestamp?: number;
   error?: string | null;
   via?: 'direct' | 'mailbox' | null;
 }
@@ -179,6 +181,10 @@ export const api = {
 
   sendMessage: (text: string) => native<Message>('send_message', { text }),
   offerFile: (path: string) => native<Transfer>('offer_file', { path }),
+  imagePreviewUrl: (room: string, id: string): string => {
+    if (!isTauri() || !/^[a-f0-9]{64}$/.test(room) || !/^[a-f0-9-]{36}$/.test(id)) return '';
+    return convertFileSrc(`${room}_${id}`, 'twinlink-preview');
+  },
   acceptFile: (id: string) => native<void>('accept_file', { id }),
   rejectFile: (id: string) => native<void>('reject_file', { id }),
   cancelTransfer: (id: string) => native<void>('cancel_transfer', { id }),
@@ -206,6 +212,11 @@ export const api = {
   chooseFile: async (): Promise<string | null> => {
     if (!isTauri()) throw new Error('请在桌面应用中选择文件。');
     const selected = await open({ multiple: false, directory: false });
+    return typeof selected === 'string' ? selected : null;
+  },
+  chooseImage: async (): Promise<string | null> => {
+    if (!isTauri()) throw new Error('请在桌面应用中选择图片。');
+    const selected = await open({ multiple: false, directory: false, filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] });
     return typeof selected === 'string' ? selected : null;
   },
   chooseFolder: async (): Promise<string | null> => {

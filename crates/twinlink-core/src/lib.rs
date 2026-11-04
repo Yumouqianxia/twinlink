@@ -5,6 +5,7 @@ mod mailbox_service;
 mod direct_files;
 pub mod backup;
 pub mod model;
+pub mod preview;
 pub mod network;
 pub mod pairing;
 pub mod state;

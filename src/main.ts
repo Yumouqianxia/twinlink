@@ -36,6 +36,7 @@ const paths: Record<string, string> = {
   close: '<path d="m6.6 6.6 10.8 10.8M17.4 6.6 6.6 17.4"/>',
   arrow: '<path d="M4.8 12h13.4M12.6 6.2 18.4 12l-5.8 5.8"/>',
   clip: '<path d="M18.6 11.4 11 19a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.1-2.1l6.9-6.9"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m4 17 5-5 3 3 4-5 4 5"/>',
   shield: '<path d="m12 3.6 7.4 2.7v5.2c0 4.5-7.4 8.4-7.4 8.4s-7.4-3.9-7.4-8.4V6.3Z"/><path d="m9.2 11.9 2.1 2.1 3.9-4.3"/>',
   upload: '<path d="M12 16.4V4.6M7.6 9 12 4.6 16.4 9M4.6 19.4h14.8"/>',
   download: '<path d="M12 4.6v11.8M7.6 12 12 16.4 16.4 12M4.6 19.4h14.8"/>',
@@ -202,7 +203,10 @@ $('#app').innerHTML = `
           <label class="sr-only" for="message-input">消息内容</label>
           <textarea id="message-input" rows="2" maxlength="16000" placeholder="连接后可以发送消息"></textarea>
           <div class="composer-bar">
-            <button type="button" class="icon-btn attach-button" aria-label="选择文件发送" title="选择文件发送" disabled>${icon('clip')}</button>
+            <div class="attachment-tools">
+              <button type="button" class="attachment-tool attach-button" aria-label="选择文件发送" title="选择文件发送" disabled>${icon('clip')}<span>文件</span></button>
+              <button type="button" class="attachment-tool image-button" aria-label="选择图片发送" title="选择图片发送" disabled>${icon('image')}<span>图片</span></button>
+            </div>
             <span class="composer-hint">Enter 发送，Shift + Enter 换行</span>
             <button type="submit" class="btn primary send-button" disabled>发送${icon('arrow')}</button>
           </div>
@@ -497,6 +501,10 @@ $('#app').innerHTML = `
       <button type="button" class="btn quiet dialog-close">关闭</button>
     </div>
   </div>
+</dialog>
+<dialog class="image-dialog" id="dlg-image" aria-labelledby="image-title">
+  <div class="image-dialog-head"><h2 id="image-title">图片预览</h2><button type="button" class="icon-btn dialog-close" aria-label="关闭图片预览">${icon('close')}</button></div>
+  <div class="image-dialog-stage"><img id="image-full" alt="" /><p id="image-unavailable" hidden>图片无法预览，可能已被移动、删除，或超过预览限制。</p></div>
 </dialog>`;
 
 /* ---------- rendering ---------- */
@@ -565,8 +573,8 @@ function emptyMarkup(): string {
           : `本机保存了这个房间，会自动尝试重新连接。${channel}`
       }</p>
       ${engineReady ? '' : '<p class="empty-aside">本机没有找到联机组件 EasyTier，暂时无法直连；离线信箱仍可收发消息。</p>'}
-      <button type="button" class="btn primary resume-action">${icon('play')}重新连接</button>
-      <button type="button" class="btn quiet open-room">查看房间详情</button>
+      <div class="empty-actions"><button type="button" class="btn primary resume-action">${icon('play')}重新连接</button>
+      <button type="button" class="btn quiet open-room">查看房间详情</button></div>
     </div>`;
   }
 
@@ -575,8 +583,8 @@ function emptyMarkup(): string {
     <h2>还没有配对</h2>
     <p>同频只在一对电脑之间使用。创建房间并把配对码发给对方，或者粘贴对方给你的配对码。</p>
     ${engineReady ? '' : '<p class="empty-aside">本机没有找到联机组件 EasyTier，暂时无法直连。</p>'}
-    <button type="button" class="btn primary open-pair">${icon('key')}开始配对</button>
-    <button type="button" class="btn quiet settings-trigger">导入服务器设置码</button>
+    <div class="empty-actions"><button type="button" class="btn primary open-pair">${icon('key')}开始配对</button>
+    <button type="button" class="btn quiet settings-trigger">导入服务器设置码</button></div>
   </div>`;
 }
 
@@ -611,6 +619,7 @@ function syncRoomWindow() {
   if (id === viewRoomId) return;
   viewRoomId = id;
   roomEpoch += 1;
+  $<HTMLDialogElement>('#dlg-image').close();
   historyLoading = false;
   historyHasMore = state.messages.length >= 200;
   /* A different room starts a different transcript: land on the newest page. */
@@ -633,11 +642,42 @@ function renderThread(options: { keepAnchor?: { height: number; top: number } } 
   const list = $<HTMLOListElement>('.messages');
   const empty = $('.empty-slot');
 
-  if (state.messages.length) {
+  const entries = [
+    ...state.messages.map(message => ({ key: `message:${message.id}`, timestamp: message.timestamp, outgoing: message.outgoing, markup: () => messageMarkup(message) })),
+    ...state.transfers.map(transfer => ({ key: `transfer:${transfer.id}`, timestamp: transfer.timestamp || 0, outgoing: transfer.outgoing, markup: () => attachmentMarkup(transfer) })),
+  ].sort((a, b) => a.timestamp - b.timestamp || a.key.localeCompare(b.key));
+  if (entries.length) {
     empty.hidden = true;
     empty.innerHTML = '';
     list.hidden = false;
-    list.innerHTML = state.messages.map(messageMarkup).join('');
+    // Keep each thumbnail node mounted across progress updates and history
+    // pagination; no new image request and no focus loss from replacing the log.
+    const existing = new Map(Array.from(list.children).map(node => [(node as HTMLElement).dataset.entryKey!, node as HTMLElement]));
+    const wanted = new Set(entries.map(entry => entry.key));
+    existing.forEach((node, key) => { if (!wanted.has(key)) node.remove(); });
+    entries.forEach((entry, index) => {
+      const template = document.createElement('template');
+      template.innerHTML = entry.markup();
+      const fresh = template.content.firstElementChild as HTMLElement;
+      fresh.dataset.entryKey = entry.key;
+      let node = existing.get(entry.key);
+      if (!node) node = fresh;
+      else if (entry.key.startsWith('transfer:')) {
+        const oldMedia = node.querySelector<HTMLElement>('.attachment-media')!;
+        const newMedia = fresh.querySelector<HTMLElement>('.attachment-media')!;
+        if (oldMedia.dataset.previewKey !== newMedia.dataset.previewKey) oldMedia.replaceWith(newMedia);
+        const oldCard = node.querySelector<HTMLElement>('.attachment-card')!;
+        const newCard = fresh.querySelector<HTMLElement>('.attachment-card')!;
+        if (oldCard.innerHTML !== newCard.innerHTML) {
+          const focused = oldCard.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset : null;
+          oldCard.innerHTML = newCard.innerHTML;
+          if (focused) oldCard.querySelector<HTMLElement>(focused.accept ? '[data-accept]' : focused.reject ? '[data-reject]' : '[data-cancel]')?.focus({ preventScroll: true });
+        }
+        const meta = node.querySelector('.msg-meta')!;
+        if (meta.innerHTML !== fresh.querySelector('.msg-meta')!.innerHTML) meta.innerHTML = fresh.querySelector('.msg-meta')!.innerHTML;
+      } else if (node.innerHTML !== fresh.innerHTML) node.innerHTML = fresh.innerHTML;
+      if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
+    });
   } else {
     empty.hidden = false;
     empty.innerHTML = emptyMarkup();
@@ -648,7 +688,7 @@ function renderThread(options: { keepAnchor?: { height: number; top: number } } 
 
   /* Follow only a genuinely appended message, never a delivery-state update:
    * otherwise a receipt landing would yank a reader out of older history. */
-  const lastId = state.messages.at(-1)?.id ?? null;
+  const lastId = entries.at(-1)?.key ?? null;
   const appended = lastId !== null && lastId !== renderedLastId;
   renderedLastId = lastId;
 
@@ -656,7 +696,7 @@ function renderThread(options: { keepAnchor?: { height: number; top: number } } 
     /* Preserve the reader's place after prepending older messages. */
     thread.scrollTop = options.keepAnchor.top + (thread.scrollHeight - options.keepAnchor.height);
     forceScroll = false;
-  } else if (forceScroll || nearBottom || (appended && state.messages.at(-1)?.outgoing)) {
+  } else if (forceScroll || nearBottom || (appended && entries.at(-1)?.outgoing)) {
     thread.scrollTop = thread.scrollHeight;
     forceScroll = false;
   }
@@ -728,6 +768,25 @@ const SHOW_PROGRESS: Transfer['status'][] = [
   'downloading',
   'publishing',
 ];
+
+function imageCandidate(transfer: Transfer) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(transfer.name);
+}
+
+function attachmentMarkup(transfer: Transfer): string {
+  const image = imageCandidate(transfer);
+  const available = image && (transfer.outgoing || transfer.status === 'completed') && !!state.room && !state.preview;
+  const url = available ? api.imagePreviewUrl(state.room!.roomId, transfer.id) : '';
+  const timestamp = transfer.timestamp && transfer.timestamp <= 8.64e15 ? transfer.timestamp : 0;
+  const time = timestamp ? `<time datetime="${new Date(timestamp).toISOString()}">${clock(timestamp)}</time>` : '<span>早期文件记录</span>';
+  return `<li class="msg attachment-msg ${transfer.outgoing ? 'out' : 'in'}" data-id="${esc(transfer.id)}">
+    <div class="msg-meta"><span class="msg-who">${esc(transfer.outgoing ? '我' : state.peerName ?? '对方')}</span>${time}</div>
+    <div class="attachment-bubble">
+      <div class="attachment-media" data-preview-key="${esc(url)}">${url ? `<button type="button" class="image-thumbnail" data-preview="${esc(transfer.id)}" aria-label="预览图片：${esc(transfer.name)}"><img src="${esc(url)}" alt="${esc(transfer.name)}" loading="lazy" decoding="async" /></button><p class="image-fallback" hidden>图片暂不可预览，可能已移动、删除或超过预览限制。</p>` : ''}</div>
+      <div class="attachment-card">${transferMarkup(transfer)}${image && !transfer.outgoing && transfer.status !== 'completed' ? '<p class="attachment-note">接收完成后可预览图片</p>' : ''}</div>
+    </div>
+  </li>`;
+}
 
 function transferMarkup(transfer: Transfer): string {
   const percent = transfer.size
@@ -1014,6 +1073,7 @@ function renderComposer() {
 
   $<HTMLButtonElement>('.send-button').disabled = !hasRoom || sending || !input.value.trim();
   $<HTMLButtonElement>('.attach-button').disabled = !hasRoom || preparing;
+  $<HTMLButtonElement>('.image-button').disabled = !hasRoom || preparing;
   $<HTMLButtonElement>('.choose-file').disabled = !hasRoom || preparing;
   $('.composer-hint').textContent = connected
     ? 'Enter 发送，Shift + Enter 换行'
@@ -1141,7 +1201,11 @@ function applyEvent(event: AppEvent) {
     state.reconnect = event.reconnect;
     state.room = event.room;
     /* a different room means a different transcript; reload it from disk */
-    if ((event.room?.roomId ?? null) !== previousRoom) void refresh();
+    if ((event.room?.roomId ?? null) !== previousRoom) {
+      state.messages = [];
+      state.transfers = [];
+      void refresh();
+    }
     /* re-render everything: transfer actions depend on the connection state */
     renderAll();
   } else if (event.type === 'server') {
@@ -1155,10 +1219,11 @@ function applyEvent(event: AppEvent) {
     const isNew = !state.transfers.some(item => item.id === event.transfer.id);
     mergeTransfer(event.transfer);
     renderTransfers();
+    renderThread();
     if (isNew && !event.transfer.outgoing && event.transfer.status === 'offered') {
       toast(state.profile.autoAcceptFiles
         ? `收到文件请求：${event.transfer.name}，已按设置自动接收。`
-        : `收到文件请求：${event.transfer.name}，请在文件传输中确认。`);
+        : `收到文件请求：${event.transfer.name}，请在聊天中确认接收。`);
     }
   } else if (event.type === 'mailbox') {
     state.mailbox = { state: event.state, message: event.message, pending: event.pending };
@@ -1927,7 +1992,8 @@ async function sendSelectedFiles(paths: string[]) {
         const transfer = await api.offerFile(path);
         mergeTransfer(transfer);
         renderTransfers();
-        showPage('files');
+        forceScroll = currentPage === 'chat';
+        renderThread();
         toast(transfer.via === 'direct'
           ? '已发送 P2P 文件邀请，等待对方接收。'
           : '无法直连，文件已加入加密离线暂存队列。');
@@ -1948,6 +2014,13 @@ async function chooseFile() {
 }
 
 $('.attach-button').addEventListener('click', chooseFile);
+$('.image-button').addEventListener('click', async () => {
+  if (preparing) return;
+  try {
+    const path = await api.chooseImage();
+    if (path) await sendSelectedFiles([path]);
+  } catch (error) { toast(String(error)); }
+});
 $('.choose-file').addEventListener('click', chooseFile);
 // Browser File objects are never converted to guessed paths or fake uploads.
 document.addEventListener('dragover', event => event.preventDefault());
@@ -1956,9 +2029,9 @@ document.addEventListener('drop', event => {
   if (state.preview) toast('拖拽发送文件需要使用桌面应用。');
 });
 
-$('.transfers').addEventListener('click', async event => {
+async function handleTransferAction(event: Event) {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button');
-  if (!button) return;
+  if (!button || !(button.dataset.accept || button.dataset.reject || button.dataset.cancel)) return;
   button.disabled = true;
   try {
     if (button.dataset.accept) await api.acceptFile(button.dataset.accept);
@@ -1968,7 +2041,36 @@ $('.transfers').addEventListener('click', async event => {
     toast(String(error));
     button.disabled = false;
   }
+}
+$('.transfers').addEventListener('click', handleTransferAction);
+$('.messages').addEventListener('click', handleTransferAction);
+$('.messages').addEventListener('click', event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-preview]');
+  const transfer = state.transfers.find(item => item.id === button?.dataset.preview);
+  if (!transfer || !state.room || state.preview || (!transfer.outgoing && transfer.status !== 'completed')) return;
+  const url = api.imagePreviewUrl(state.room.roomId, transfer.id);
+  if (!url) return;
+  $('#image-title').textContent = transfer.name;
+  const image = $<HTMLImageElement>('#image-full');
+  image.alt = transfer.name;
+  image.hidden = false;
+  $('#image-unavailable').hidden = true;
+  image.src = url;
+  $<HTMLDialogElement>('#dlg-image').showModal();
 });
+$('#dlg-image').addEventListener('close', () => $<HTMLImageElement>('#image-full').removeAttribute('src'));
+$('#image-full').addEventListener('error', () => {
+  $('#image-full').hidden = true;
+  $('#image-unavailable').hidden = false;
+});
+$('.messages').addEventListener('error', event => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement)) return;
+  const media = image.closest('.attachment-media');
+  media?.querySelector<HTMLElement>('.image-thumbnail')?.setAttribute('hidden', '');
+  const fallback = media?.querySelector<HTMLElement>('.image-fallback');
+  if (fallback) fallback.hidden = false;
+}, true);
 
 $('.history-more').addEventListener('click', () => void loadEarlier());
 

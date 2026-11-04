@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 mod updates;
 mod startup;
+mod preview;
 
 struct AppState(Arc<Core>);
 type Reply<T> = std::result::Result<T, String>;
@@ -136,7 +137,7 @@ async fn message_history(
 fn main() {
     startup::initialize();
     startup::record("webview-runtime", &tauri::webview_version().unwrap_or_else(|_| "unavailable".into()));
-    let application = tauri::Builder::default()
+    let application = preview::register(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Updates::default())

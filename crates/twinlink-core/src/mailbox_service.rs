@@ -30,6 +30,12 @@ const DIRECT_GRACE_MS: u64 = 1_500;
 const RETRY_CAP: Duration = Duration::from_secs(30);
 const CHUNKS_PER_TICK: u64 = 4;
 
+/// Reuse the persisted creation time of a file record when a later status
+/// update rebuilds its `Transfer` value; never restamp on progress.
+fn keep_stamp(timestamp: u64, previous: Option<&Transfer>) -> u64 {
+    previous.map(|t| t.timestamp).filter(|v| *v != 0).unwrap_or(timestamp)
+}
+
 impl Core {
     pub(crate) async fn mailbox_loop(self: std::sync::Arc<Self>) {
         let mut changes = self.desired.subscribe();
@@ -571,6 +577,9 @@ impl Core {
             outgoing: false,
             status: "offered".into(),
             error: None,
+            // A re-offer after a dropped direct session keeps the original
+            // arrival time so the chat timeline does not reorder itself.
+            timestamp: previous.as_ref().map(|row| row.created_at).unwrap_or(download.created_at),
         };
         if previous.is_some() {
             self.store.set_download(room_id, id, "offered", None, None, 0, None)?;
@@ -596,7 +605,8 @@ impl Core {
             // Only an upload that actually reached the peer may become
             // completed. A late completion for a failed/cancelled upload must
             // never rewrite terminal history.
-            let transfer = Transfer { via: self.store.transfer(room_id, id)?.and_then(|t| t.via),
+            let previous = self.store.transfer(room_id, id)?;
+            let transfer = Transfer { via: previous.as_ref().and_then(|t| t.via.clone()),
                 id: id.into(),
                 name: upload.name.clone(),
                 size: upload.size,
@@ -604,6 +614,7 @@ impl Core {
                 outgoing: true,
                 status: "completed".into(),
                 error: None,
+                timestamp: keep_stamp(upload.created_at, previous.as_ref()),
             };
             if self.store.complete_upload(room_id, id, &transfer)? {
                 let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, id));
@@ -631,7 +642,8 @@ impl Core {
             if !["completed", "failed", "cancelled", "rejected", "withdrawn"].contains(&upload.status.as_str()) {
                 self.store.set_upload_status(room_id, id, status, None)?;
                 let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, id));
-                let transfer = Transfer { via: self.store.transfer(room_id, id)?.and_then(|t| t.via),
+                let previous = self.store.transfer(room_id, id)?;
+                let transfer = Transfer { via: previous.as_ref().and_then(|t| t.via.clone()),
                     id: id.into(),
                     name: upload.name.clone(),
                     size: upload.size,
@@ -639,6 +651,7 @@ impl Core {
                     outgoing: true,
                     status: status.into(),
                     error: None,
+                    timestamp: keep_stamp(upload.created_at, previous.as_ref()),
                 };
                 self.store.save_transfer(room_id, &transfer)?;
                 self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
@@ -653,7 +666,8 @@ impl Core {
                 if let Some(path) = download.temp_path.clone() {
                     let _ = fs::remove_file(path);
                 }
-                let transfer = Transfer { via: self.store.transfer(room_id, id)?.and_then(|t| t.via),
+                let previous = self.store.transfer(room_id, id)?;
+                let transfer = Transfer { via: previous.as_ref().and_then(|t| t.via.clone()),
                     id: id.into(),
                     name: download.name.clone(),
                     size: download.size,
@@ -661,6 +675,7 @@ impl Core {
                     outgoing: false,
                     status: status.into(),
                     error: None,
+                    timestamp: keep_stamp(download.created_at, previous.as_ref()),
                 };
                 self.store.save_transfer(room_id, &transfer)?;
                 self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer }).await;
@@ -690,7 +705,7 @@ impl Core {
                     if !matches!(self.store.upload(room_id, &upload.file_id), Ok(Some(row)) if row.status == "pending") { continue; }
                     let (status, error) = match prepared { Ok(()) => ("uploading", None), Err(e) => ("failed", Some(e.to_string())) };
                     let transfer = Transfer { via: Some("mailbox".into()), id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
-                        transferred: 0, outgoing: true, status: status.into(), error: error.clone() };
+                        transferred: 0, outgoing: true, status: status.into(), error: error.clone(), timestamp: upload.created_at };
                     if self.store.update_upload_with_event(room_id, &upload.file_id, status, error.as_deref(), &transfer, None).map_err(db_error)? {
                         if error.is_some() {
                             let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, &upload.file_id));
@@ -876,7 +891,7 @@ impl Core {
         let _operation = self.operations.lock().await;
         if !matches!(self.store.upload(room_id, &upload.file_id), Ok(Some(row)) if row.status == "uploading") { return Ok(()); }
         let waiting = Transfer { via: Some("mailbox".into()), id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
-            transferred: upload.size, outgoing: true, status: "waiting".into(), error: None };
+            transferred: upload.size, outgoing: true, status: "waiting".into(), error: None, timestamp: upload.created_at };
         if self.store.update_upload_with_event(room_id, &upload.file_id, "waiting", None, &waiting,
             Some((&event_id, &format!("file-offer:{}", upload.file_id), "offer", &peer, &envelope))).map_err(db_error)? {
             self.emit_in_room(room_id, crate::model::AppEvent::Transfer { transfer: waiting }).await;
@@ -908,7 +923,7 @@ impl Core {
         };
         let _operation = self.operations.lock().await;
         let transfer = Transfer { via: Some("mailbox".into()), id: upload.file_id.clone(), name: upload.name.clone(), size: upload.size,
-            transferred: 0, outgoing: true, status: "failed".into(), error: Some(message.clone()) };
+            transferred: 0, outgoing: true, status: "failed".into(), error: Some(message.clone()), timestamp: upload.created_at };
         if self.store.update_upload_with_event(room_id, &upload.file_id, "failed", Some(&message), &transfer, None).map_err(db_error)? {
             let _ = remove_dir_all(&spool_dir(&self.data_dir, room_id, &upload.file_id));
             self.notify_file_failure(room_id, &upload.file_id).await.map_err(db_error)?;
@@ -1087,6 +1102,7 @@ impl Core {
             outgoing: false,
             status: "publishing".into(),
             error: None,
+            timestamp: download.created_at,
         };
         self.store
             .set_download_publishing(
@@ -1132,6 +1148,7 @@ impl Core {
             outgoing: false,
             status: "completed".into(),
             error: None,
+            timestamp: download.created_at,
         };
         // One transaction: completion + receipt outbox. If it fails we keep the
         // published final file (its path is durable) and retry next tick.
@@ -1178,6 +1195,7 @@ impl Core {
                     outgoing: false,
                     status: "failed".into(),
                     error: Some("发布状态缺失，请重新接收".into()),
+                    timestamp: download.created_at,
                 };
                 let _ = self.store.update_download_with_event(
                     room_id, &download.file_id, "failed", Some("发布状态缺失，请重新接收"), &transfer, None,
@@ -1213,6 +1231,7 @@ impl Core {
                 outgoing: false,
                 status: "failed".into(),
                 error: Some("文件校验失败".into()),
+                timestamp: download.created_at,
             };
             let _ = self.store.update_download_with_event(
                 room_id, &download.file_id, "failed", Some("文件校验失败"), &transfer, None,
@@ -1238,6 +1257,7 @@ impl Core {
             outgoing: false,
             status: "completed".into(),
             error: None,
+            timestamp: download.created_at,
         };
         self.store
             .complete_download(
@@ -1269,6 +1289,7 @@ impl Core {
             outgoing: false,
             status: "failed".into(),
             error: Some(message.into()),
+            timestamp: download.created_at,
         };
         let saved = self.store.update_download_with_event(
             room_id,
@@ -1319,6 +1340,7 @@ impl Core {
                 outgoing: true,
                 status: status.into(),
                 error: None,
+                timestamp: now(),
             },
         };
         transfer.status = status.into();
@@ -1390,6 +1412,9 @@ impl Core {
         if metadata.len() > MAX_FILE_SIZE {
             bail!("单个文件不能超过 1 GiB");
         }
+        // Resolve the selection once and store a regular file path, so later
+        // preview reads never have to follow a symlink the user chose.
+        let path = path.canonicalize().context("无法读取所选文件")?;
         let selection = self.inner.lock().await.room.clone().context("还没有保存的房间，请创建或加入房间")?;
         let room_id = selection.spec()?.room_id;
         let (size, hash) = hash_file(&path).await?;
@@ -1417,6 +1442,7 @@ impl Core {
             outgoing: true,
             status: "preparing".into(),
             error: None,
+            timestamp: upload.created_at,
         };
         let _operation = self.operations.lock().await;
         anyhow::ensure!(self.inner.lock().await.room.as_ref() == Some(&selection), "房间已改变，请重新选择发送");
