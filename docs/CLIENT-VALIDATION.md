@@ -1,6 +1,12 @@
 # 客户端验证记录
 
-## 2026-11-06 消息确认与联机补发（本地未发布）
+## 2026-11-15 v0.0.4 发布与公开产物验收
+
+[v0.0.4](https://github.com/Yumouqianxia/twinlink/releases/tag/v0.0.4) 已公开为预发布版，tag 指向 `881f97f4c725abdd52e36f8f70fcc0161fc6d64b`。其 [Release 工作流](https://github.com/Yumouqianxia/twinlink/actions/runs/43619374136) 三平台签名构建、发布及 Windows 正常安装启动、下载目录异常、数据库损坏检查全部通过。[Windows/macOS Check](https://github.com/Yumouqianxia/twinlink/actions/runs/43619348307) 通过。
+
+独立下载并校验 8 个公开产物：三平台安装/更新包、三份签名、`SHA256SUMS.txt`、`latest.json`。所有文件 SHA-256 和大小与 GitHub 一致，三套包与校验文件一致；用应用内置公钥验证签名及签名绑定版本 `0.0.4`。公开 `updates` 分支的更新清单与 Release 清单一致，三套包均指向本仓库 GitHub Release。未在用户电脑安装或更新，公网双机消息投递仍待实测。
+
+## 2026-11-06 消息确认与联机补发（后随 v0.0.4 发布）
 
 修复同一消息的送达回执先于发送调用返回、或先于旧快照返回时，界面被较弱的 `pending` / `stored` 状态覆盖的问题。按消息 ID 单调合并确认信息，保留原始正文、方向和时间；换房后丢弃旧房间的在途发送响应及快照。状态文字改为“尚未确认送达”“服务器已暂存”“已送达对方设备”，提示明确说明设备确认不代表已读。信箱计数包含回执与文件事件，改称“项待同步”。
 
