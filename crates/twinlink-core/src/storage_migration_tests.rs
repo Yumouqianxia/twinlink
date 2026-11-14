@@ -79,7 +79,7 @@ fn paged_history_has_no_duplicates_at_equal_timestamps_and_scopes_cursors() {
         let id = uuid::Uuid::new_v4().to_string();
         store.save_message("room-a", &Message {
             id: id.clone(), text: i.to_string(), timestamp: 100, outgoing: true,
-            delivery: "unknown".into(), via: None,
+            delivery: "unknown".into(), via: None, recalled: false, recall_pending: false,
         }).unwrap();
         ids.push(id);
     }
@@ -107,7 +107,7 @@ fn failed_outbox_insert_rolls_back_message_and_receipt_clears_pending_atomically
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("history.db")).unwrap();
     let message = Message { id: uuid::Uuid::new_v4().to_string(), text: "durability".into(), timestamp: 1,
-        outgoing: true, delivery: "pending".into(), via: None };
+        outgoing: true, delivery: "pending".into(), via: None, recalled: false, recall_pending: false };
     store.0.lock().unwrap().execute_batch("CREATE TRIGGER deny_outbox BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
     assert!(store.enqueue_message("room", &message, &message.id, &message.id, "join", b"sealed fixture", 0).is_err());
     assert!(store.messages("room").unwrap().is_empty());

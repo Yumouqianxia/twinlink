@@ -11,10 +11,11 @@ Run against Vite: python tests/message_delivery_ui.py [http://127.0.0.1:1420]
 """
 import os
 import sys
+import tempfile
 from playwright.sync_api import sync_playwright, expect
 
 URL = sys.argv[1] if len(sys.argv) > 1 else 'http://127.0.0.1:1420'
-SHOTS = '/tmp/twinlink-dsh-delivery'
+SHOTS = os.environ.get('TWINLINK_UI_SHOTS', os.path.join(tempfile.gettempdir(), 'twinlink-dsh-delivery'))
 FIXTURE = r'''
 const stamp = 1700000000000;
 const roomA = {role:'host',roomId:'a'.repeat(64),networkName:'fixture',virtualIp:'10.1.1.1',peerVirtualIp:'10.1.1.2'};
@@ -47,7 +48,7 @@ export const api={
   onFileDrop:async handler=>{window.nativeDrop=handler;return()=>{}},
   onUpdateProgress:async()=>()=>{},
   checkUpdate:async()=>({currentVersion:'0.0.3',version:null,notes:null}),
-  history:async before=>{log('history',before);return {roomId:window.fixture.room.roomId,messages:[],hasMore:false}},
+  history:async before=>{log('history',before);return {roomId:window.fixture.room.roomId,messages:window.olderMessages??[],hasMore:false}},
   imagePreviewUrl:(room,id)=>'/__fixture_image__/'+room+'/'+id,
   chooseImage:async()=>null,chooseFile:async()=>null,chooseFolder:async()=>null,
   offerFile:async path=>{log('offerFile',path);return null},
@@ -61,6 +62,13 @@ export const api={
     window.appEvent({type:'message', message:structuredClone(pending)});
     if (window.sendGate) await window.sendGate;
     return structuredClone(pending);
+  },
+  recallMessage:async (roomId,id)=>{
+    log('recallMessage',{roomId,id});
+    const message={...window.fixture.messages.find(m=>m.id===id), text:'', recalled:true, recallPending:true};
+    window.appEvent({type:'message',message});
+    if (window.recallGate) await window.recallGate;
+    return message;
   },
   pause:async()=>log('pause'),resume:async()=>log('resume'),forgetRoom:async()=>log('forget'),
   createRoom:async()=>'TL1.fixture-code',joinRoom:async code=>log('join',code),
@@ -81,8 +89,8 @@ def open_page(page):
 
 with sync_playwright() as p:
     os.makedirs(SHOTS, exist_ok=True)
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page(viewport={'width': 1160, 'height': 780})
+    browser = p.chromium.launch(headless=True, channel=os.environ.get('TWINLINK_BROWSER_CHANNEL'))
+    page = browser.new_page(viewport={'width': 1160, 'height': 780}, timezone_id='Asia/Shanghai')
     errors = []
     page.on('pageerror', lambda err: errors.append(str(err)))
     page.route('**/src/api.ts*', lambda route: route.fulfill(status=200, content_type='application/javascript', body=FIXTURE))
@@ -233,6 +241,61 @@ with sync_playwright() as p:
     page.wait_for_function("document.querySelector('.composer-hint').textContent.includes('Enter')")
     expect(page.locator('.messages > li')).to_have_count(0)
     expect(page.locator('#message-input')).to_have_value('新房间草稿')
+
+    # An old sent message shows the local calendar day and can still be recalled.
+    page.reload()
+    page.wait_for_load_state('networkidle')
+    expect(row(page, 'old').locator('time')).to_have_text('2023/11/15 06:13')
+    page.evaluate("""() => {
+      window.appEvent({type:'message',message:{id:'peer',text:'对方的原文',outgoing:false,
+        timestamp:1699000000000,delivery:'delivered'}});
+    }""")
+    expect(row(page, 'peer').get_by_role('button', name='撤回')).to_have_count(0)
+    row(page, 'old').get_by_role('button', name='撤回').click()
+    expect(page.get_by_role('dialog', name='撤回这条消息？')).to_be_visible()
+    page.get_by_role('button', name='取消', exact=True).click()
+    expect(row(page, 'old').locator('.msg-bubble')).to_have_text('较早的消息')
+    assert not page.evaluate("calls.some(call => call.method === 'recallMessage')")
+    page.evaluate("() => {window.recallGate=new Promise(resolve=>window.releaseRecall=resolve);}")
+    row(page, 'old').get_by_role('button', name='撤回').click()
+    page.get_by_role('button', name='确认撤回').click()
+    expect(row(page, 'old').locator('.msg-recalled')).to_have_text('你撤回了一条消息')
+    expect(row(page, 'old').locator('.msg-status')).to_have_text('等待对方同步')
+    page.evaluate("""() => {
+      const original = fixture.messages.find(m => m.id === 'old');
+      window.appEvent({type:'message',message:{...original,text:'',recalled:true,recallPending:false}});
+      window.resync(structuredClone(fixture));
+      window.releaseRecall();
+      window.appEvent({type:'message',message:{id:'peer',text:'',recalled:true,outgoing:false,
+        timestamp:1699000000000,delivery:'delivered'}});
+    }""")
+    expect(row(page, 'old').locator('.msg-status')).to_have_count(0)
+    expect(row(page, 'old').locator('.msg-bubble')).to_have_count(0)
+    expect(row(page, 'peer').locator('.msg-recalled')).to_have_text('对方撤回了一条消息')
+    expect(row(page, 'peer').locator('.msg-bubble')).to_have_count(0)
+    page.screenshot(path=os.path.join(SHOTS, '04-recalled-messages.png'))
+
+    # An unsolicited recall for an older page must not move the paging cursor.
+    page.evaluate("""() => {
+      fixture.room=roomB;
+      fixture.messages=Array.from({length:200},(_,i)=>({id:'page-'+i,text:'历史消息',
+        timestamp:1700000000000+i,outgoing:false,delivery:'delivered'}));
+      window.resync(structuredClone(fixture));
+    }""")
+    expect(row(page, 'page-0')).to_have_count(1)
+    page.evaluate("""() => {
+      const recall={id:'oldest',text:'',timestamp:1698000000000,outgoing:false,
+        delivery:'delivered',recalled:true};
+      appEvent({type:'message',message:recall});
+      window.olderMessages=[
+        {...recall,text:'旧快照里的正文',recalled:false},
+        {id:'between',text:'中间的消息',timestamp:1699000000000,outgoing:false,delivery:'delivered'},
+      ];
+    }""")
+    page.get_by_role('button', name='加载更早的消息').click()
+    assert page.evaluate("calls.findLast(call=>call.method==='history').args") == 'page-0'
+    expect(row(page, 'between').locator('.msg-bubble')).to_have_text('中间的消息')
+    expect(row(page, 'oldest').locator('.msg-recalled')).to_have_text('对方撤回了一条消息')
 
     assert not errors, f'page errors: {errors}'
     print('message delivery UI regressions passed')

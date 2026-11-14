@@ -908,6 +908,7 @@ svg.i {
 
 .msg-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   padding: 0 4px;
@@ -921,6 +922,28 @@ svg.i {
 
 .msg-meta time {
   font-variant-numeric: tabular-nums;
+}
+
+.msg-recall {
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--tl-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.msg-recall:hover,
+.msg-recall:focus-visible {
+  color: var(--tl-accent);
+  text-decoration: underline;
+}
+
+.msg-recalled {
+  padding: 5px 4px;
+  color: var(--tl-muted);
+  font-size: 12px;
 }
 
 .msg-bubble {

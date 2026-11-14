@@ -80,7 +80,7 @@ impl Archive {
                 valid_room(&row.room)
                     && Uuid::parse_str(&row.message.id).is_ok()
                     && row.message.timestamp <= i64::MAX as u64
-                    && !row.message.text.trim().is_empty()
+                    && if row.message.recalled { row.message.text.is_empty() } else { !row.message.text.trim().is_empty() }
                     && row.message.text.len() <= 16 * 1024
                     && ["pending", "stored", "delivered", "unknown"]
                         .contains(&row.message.delivery.as_str())
@@ -226,6 +226,7 @@ impl Core {
             if row.message.outgoing && row.message.delivery == "pending" {
                 row.message.delivery = "unknown".into();
             }
+            row.message.recall_pending = false;
         }
         for row in &mut archive.transfers {
             if !["completed", "cancelled", "rejected", "failed"]

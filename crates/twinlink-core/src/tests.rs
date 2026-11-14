@@ -311,7 +311,7 @@ async fn forget_room_keeps_chat_history() {
         .unwrap();
     core.create_room().await.unwrap();
     let room = core.snapshot().await.unwrap().room.unwrap().room_id;
-    let message = Message { id: "m1".into(), text: "历史消息".into(), outgoing: true, timestamp: now(), delivery: "delivered".into(), via: None };
+    let message = Message { id: "m1".into(), text: "历史消息".into(), outgoing: true, timestamp: now(), delivery: "delivered".into(), via: None, recalled: false, recall_pending: false };
     core.store.save_message(&room, &message).unwrap();
     core.forget_room().await.unwrap();
     let snapshot = core.snapshot().await.unwrap();
@@ -506,6 +506,83 @@ async fn chat_is_bidirectional_and_persisted() {
         .iter()
         .any(|m| !m.outgoing && m.text == "收到，正在查看"));
     cancel.cancel();
+}
+
+#[tokio::test]
+async fn recall_syncs_over_direct_and_late_chat_cannot_restore_the_text() {
+    let (left, right, _left_dir, right_dir, cancel) = pair().await;
+    let room = left.current_room_id().await.unwrap();
+    let id = Uuid::new_v4();
+    // Simulate an old sent message that has not reached the recipient yet.
+    let original = Message {
+        id: id.to_string(),
+        text: "original text".into(),
+        outgoing: true,
+        timestamp: 1_690_000_000_000,
+        delivery: "stored".into(),
+        via: Some("mailbox".into()),
+        recalled: false,
+        recall_pending: false,
+    };
+    left.store.save_message(&room, &original).unwrap();
+    assert!(left.recall_message("different-room", id).await.is_err());
+    let local = left.recall_message(&room, id).await.unwrap();
+    assert!(local.recalled && local.recall_pending && local.text.is_empty());
+    wait_recall_confirmed(&left, &room, &original.id).await;
+    let remote = right.store.message(&room, &original.id).unwrap().unwrap();
+    assert!(remote.recalled && !remote.outgoing && remote.text.is_empty());
+    assert_eq!(remote.timestamp, original.timestamp);
+    assert!(right.recall_message(&room, id).await.is_err());
+
+    let sender = left.inner.lock().await.sender.clone().unwrap();
+    // Inject a late frame from the peer side of a real authenticated session.
+    // Writing through the public send queue would correctly suppress it.
+    let pending = Arc::new(Mutex::new(SessionState::default()));
+    let generation = right.inner.lock().await.generation;
+    right.handle(Frame::Control(Control::Chat {
+        id, text: original.text, timestamp: original.timestamp,
+    }), &sender, &room, generation, &pending).await.unwrap();
+    assert_eq!(pending.lock().await.pop_receipt(), Some(id));
+    assert_eq!(right.store.messages(&room).unwrap().len(), 1);
+    assert!(left.store.due_events(&room, u64::MAX / 2, 10).unwrap().is_empty());
+    cancel.cancel();
+    let reopened = Core::open(right_dir.path().join("data"), right_dir.path().into(), PathBuf::new()).unwrap();
+    let restored = reopened.store.message(&room, &remote.id).unwrap().unwrap();
+    assert!(restored.recalled && restored.text.is_empty());
+}
+
+async fn wait_recall_confirmed(core: &Core, room: &str, id: &str) {
+    timeout(Duration::from_secs(12), async {
+        while !core.store.message(room, id).unwrap().is_some_and(|m| m.recalled && !m.recall_pending) {
+            sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("peer must confirm the recall");
+}
+
+#[tokio::test]
+async fn recall_survives_offline_queue_and_recipient_acknowledges_over_mailbox() {
+    let MailboxPair { left, right, left_dir, right_dir: _right_dir, server, cancel } = mailbox_pair().await;
+    let room = left.current_room_id().await.unwrap();
+    let original = left.send_message("原消息已经收到".into()).await.unwrap();
+    wait_delivered(&left, &original.id).await;
+    right.pause().await.unwrap();
+    let id = Uuid::parse_str(&original.id).unwrap();
+    assert!(left.recall_message(&room, id).await.unwrap().recall_pending);
+    left.shutdown().await;
+
+    let resumed = Core::open(left_dir.path().join("data"), left_dir.path().into(), PathBuf::new()).unwrap();
+    *resumed.transport.lock().unwrap() = Some(Arc::new(server.clone()));
+    assert!(resumed.store.message(&room, &original.id).unwrap().unwrap().recall_pending);
+    let mailbox = tokio::spawn(resumed.clone().mailbox_loop());
+    right.resume().await.unwrap();
+    wait_recall_confirmed(&resumed, &room, &original.id).await;
+    let remote = right.store.message(&room, &original.id).unwrap().unwrap();
+    assert!(remote.recalled && remote.text.is_empty());
+    assert_eq!(remote.timestamp, original.timestamp);
+    assert_eq!(right.store.messages(&room).unwrap().len(), 1);
+    assert_eq!(resumed.store.pending_outbox(&room).unwrap(), 0);
+    cancel.cancel();
+    mailbox.abort();
 }
 
 #[tokio::test]
@@ -1127,7 +1204,7 @@ async fn backup_round_trip_merges_all_pages_retains_local_directory_and_never_re
     let room = left.snapshot().await.unwrap().room.unwrap().room_id;
     for index in 0..205 {
         left.store.save_message(&room, &Message { id: Uuid::new_v4().to_string(), text: format!("历史 {index}"), outgoing: true,
-            timestamp: index + 1, delivery: "pending".into(), via: None }).unwrap();
+            timestamp: index + 1, delivery: "pending".into(), via: None, recalled: false, recall_pending: false }).unwrap();
     }
     let path = left_dir.path().join("未完成.txt");
     tokio::fs::write(&path, b"not exported bytes").await.unwrap();
@@ -1231,7 +1308,7 @@ async fn backup_merge_preserves_current_room_and_newer_receipts() {
     source.create_room().await.unwrap();
     let room = source.snapshot().await.unwrap().room.unwrap().room_id;
     let message = Message { id: Uuid::new_v4().to_string(), text: "already delivered".into(), outgoing: true,
-        timestamp: 1, delivery: "stored".into(), via: Some("mailbox".into()) };
+        timestamp: 1, delivery: "stored".into(), via: Some("mailbox".into()), recalled: false, recall_pending: false };
     source.store.save_message(&room, &message).unwrap();
     let path = dir.path().join("backup.json");
     source.export_data(path.clone()).await.unwrap();
@@ -1416,7 +1493,7 @@ async fn offline_queue_reconnects_directly_without_mailbox_or_history_replay() {
     let room = left.current_room_id().await.unwrap();
     let sent = left.send_message("queued before any connection".into()).await.unwrap();
     // A history-only row has no original send outbox, like imported backups.
-    let history = Message { id:Uuid::new_v4().to_string(), text:"history only".into(), outgoing:true, timestamp:now(), delivery:"unknown".into(), via:None };
+    let history = Message { id:Uuid::new_v4().to_string(), text:"history only".into(), outgoing:true, timestamp:now(), delivery:"unknown".into(), via:None, recalled: false, recall_pending: false };
     left.store.save_message(&room, &history).unwrap();
     let cancel = connect_faulty(&left, &right, Arc::new(LinkFaults::default())).await;
     wait_delivered(&left, &sent.id).await;
@@ -1490,7 +1567,7 @@ async fn full_file_queue_cannot_block_durable_chat_retry_admission() {
     assert_eq!(tx.capacity(),0);
     let state=Arc::new(Mutex::new(SessionState::default()));
     left.resend_unconfirmed(&room,generation,&state).await.unwrap();
-    let retry=state.lock().await.pop_retry().unwrap();
+    let (_, retry) = state.lock().await.pop_retry().unwrap();
     assert_eq!(retry.id,sent.id);
     assert_eq!(retry.timestamp,sent.timestamp);
     assert_eq!(tx.capacity(),0,"control admission did not drop or consume file frames");

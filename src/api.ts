@@ -24,6 +24,8 @@ export interface Message {
   delivery: Delivery;
   /** `direct` or `mailbox`; absent while a message is still purely local. */
   via?: string | null;
+  recalled?: boolean;
+  recallPending?: boolean;
 }
 export interface Transfer {
   id: string;
@@ -180,6 +182,7 @@ export const api = {
   forgetRoom: () => native<void>('forget_room'),
 
   sendMessage: (text: string) => native<Message>('send_message', { text }),
+  recallMessage: (roomId: string, id: string) => native<Message>('recall_message', { roomId, id }),
   offerFile: (path: string) => native<Transfer>('offer_file', { path }),
   imagePreviewUrl: (room: string, id: string): string => {
     if (!isTauri() || !/^[a-f0-9]{64}$/.test(room) || !/^[a-f0-9-]{36}$/.test(id)) return '';

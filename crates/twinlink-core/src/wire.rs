@@ -13,6 +13,7 @@ const VERSION: u32 = 1;
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Control {
     Chat { id: Uuid, text: String, #[serde(default)] timestamp: u64 },
+    Recall { id: Uuid, event_id: Uuid, timestamp: u64 },
     Receipt { id: Uuid },
     Offer { id: Uuid, name: String, size: u64, hash: String },
     Accept { id: Uuid },
@@ -64,13 +65,16 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame> {
 struct Hello {
     version: u32, name: String, nonce: String, proof: String,
     #[serde(default)] file_protocol: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    recall: bool,
 }
 
-pub struct Peer { pub name: String, pub files: bool }
+pub struct Peer { pub name: String, pub files: bool, pub recall: bool }
 
-fn session_proof(secret: &str, label: &[u8], server: &[u8], client: &[u8], name: &str, files: bool) -> Hmac<Sha256> {
+fn session_proof(secret: &str, label: &[u8], server: &[u8], client: &[u8], name: &str, files: bool, recall: bool) -> Hmac<Sha256> {
     let mut mac = proof(secret, label, server, client, name);
     if files { mac.update(b"/files-v2"); }
+    if recall { mac.update(b"/recall-v1"); }
     mac
 }
 
@@ -104,26 +108,28 @@ pub async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, sec
     let mut nonce = [0; 32];
     rand::thread_rng().fill_bytes(&mut nonce);
     if server_side {
-        send_hello(stream, &Hello { version: VERSION, name: name.into(), nonce: hex::encode(nonce), proof: String::new(), file_protocol: 2 }).await?;
+        send_hello(stream, &Hello { version: VERSION, name: name.into(), nonce: hex::encode(nonce), proof: String::new(), file_protocol: 2, recall: true }).await?;
         let peer = read_hello(stream).await?;
         let other = hex::decode(&peer.nonce)?;
         if other.len() != 32 { bail!("无效的握手随机数"); }
         let files = peer.file_protocol == 2;
-        session_proof(secret, b"client", &nonce, &other, &peer.name, files).verify_slice(&hex::decode(&peer.proof)?).context("房间密码不匹配")?;
-        let signed = session_proof(secret, b"server", &nonce, &other, name, files).finalize().into_bytes();
-        send_hello(stream, &Hello { version: VERSION, name: name.into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: if files { 2 } else { 0 } }).await?;
-        Ok(Peer { name: peer.name, files })
+        let recall = peer.recall;
+        session_proof(secret, b"client", &nonce, &other, &peer.name, files, recall).verify_slice(&hex::decode(&peer.proof)?).context("房间密码不匹配")?;
+        let signed = session_proof(secret, b"server", &nonce, &other, name, files, recall).finalize().into_bytes();
+        send_hello(stream, &Hello { version: VERSION, name: name.into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: if files { 2 } else { 0 }, recall }).await?;
+        Ok(Peer { name: peer.name, files, recall })
     } else {
         let server = read_hello(stream).await?;
         let server_nonce = hex::decode(&server.nonce)?;
         if server_nonce.len() != 32 { bail!("无效的握手随机数"); }
         let files = server.file_protocol == 2;
-        let signed = session_proof(secret, b"client", &server_nonce, &nonce, name, files).finalize().into_bytes();
-        send_hello(stream, &Hello { version: VERSION, name: name.into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: if files { 2 } else { 0 } }).await?;
+        let recall = server.recall;
+        let signed = session_proof(secret, b"client", &server_nonce, &nonce, name, files, recall).finalize().into_bytes();
+        send_hello(stream, &Hello { version: VERSION, name: name.into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: if files { 2 } else { 0 }, recall }).await?;
         let authenticated = read_hello(stream).await?;
-        anyhow::ensure!((authenticated.file_protocol == 2) == files, "文件协议协商失败");
-        session_proof(secret, b"server", &server_nonce, &nonce, &authenticated.name, files).verify_slice(&hex::decode(&authenticated.proof)?).context("房间密码不匹配")?;
-        Ok(Peer { name: authenticated.name, files })
+        anyhow::ensure!((authenticated.file_protocol == 2) == files && authenticated.recall == recall, "功能协议协商失败");
+        session_proof(secret, b"server", &server_nonce, &nonce, &authenticated.name, files, recall).verify_slice(&hex::decode(&authenticated.proof)?).context("房间密码不匹配")?;
+        Ok(Peer { name: authenticated.name, files, recall })
     }
 }
 
@@ -160,7 +166,7 @@ mod tests {
                 let nonce = [3u8; 32];
                 let challenge = hex::decode(hello.nonce).unwrap();
                 let signed = proof("shared", b"client", &challenge, &nonce, "legacy").finalize().into_bytes();
-                send_hello(&mut client, &Hello { version: VERSION, name: "legacy".into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: 0 }).await.unwrap();
+                send_hello(&mut client, &Hello { version: VERSION, name: "legacy".into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: 0, recall: false }).await.unwrap();
                 let hello = read_hello(&mut client).await.unwrap();
                 assert_eq!(hello.file_protocol, 0);
                 proof("shared", b"server", &challenge, &nonce, "new").verify_slice(&hex::decode(hello.proof).unwrap()).unwrap();
@@ -176,13 +182,13 @@ mod tests {
         let (old, new) = tokio::join!(
             async {
                 let nonce = [4u8; 32];
-                send_hello(&mut server, &Hello { version: VERSION, name: "legacy".into(), nonce: hex::encode(nonce), proof: String::new(), file_protocol: 0 }).await.unwrap();
+                send_hello(&mut server, &Hello { version: VERSION, name: "legacy".into(), nonce: hex::encode(nonce), proof: String::new(), file_protocol: 0, recall: false }).await.unwrap();
                 let peer = read_hello(&mut server).await.unwrap();
                 assert_eq!(peer.file_protocol, 0);
                 let client_nonce = hex::decode(peer.nonce).unwrap();
                 proof("shared", b"client", &nonce, &client_nonce, "new").verify_slice(&hex::decode(peer.proof).unwrap()).unwrap();
                 let signed = proof("shared", b"server", &nonce, &client_nonce, "legacy").finalize().into_bytes();
-                send_hello(&mut server, &Hello { version: VERSION, name: "legacy".into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: 0 }).await.unwrap();
+                send_hello(&mut server, &Hello { version: VERSION, name: "legacy".into(), nonce: hex::encode(nonce), proof: hex::encode(signed), file_protocol: 0, recall: false }).await.unwrap();
             },
             authenticate(&mut client, "shared", "new", false),
         );

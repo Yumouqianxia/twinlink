@@ -43,6 +43,10 @@ pub enum Body {
     Receipt {
         message_id: String,
     },
+    Recall {
+        id: String,
+        timestamp: u64,
+    },
     Offer {
         id: String,
         name: String,
@@ -95,6 +99,9 @@ impl Body {
             }),
             Body::Receipt { message_id } => {
                 serde_json::json!({ "kind": "receipt", "messageId": message_id })
+            }
+            Body::Recall { id, timestamp } => {
+                serde_json::json!({ "kind": "recall", "id": id, "timestamp": timestamp })
             }
             Body::Offer {
                 id,
@@ -155,6 +162,15 @@ impl Body {
                     .to_owned();
                 canonical_uuid(&message_id)?;
                 Ok(Body::Receipt { message_id })
+            }
+            "recall" => {
+                exact_keys(object, &["kind", "id", "timestamp"])?;
+                let id = object["id"].as_str().context("撤回消息标识无效")?.to_owned();
+                canonical_uuid(&id)?;
+                let timestamp = object["timestamp"].as_u64()
+                    .filter(|value| *value <= i64::MAX as u64)
+                    .context("撤回消息时间无效")?;
+                Ok(Body::Recall { id, timestamp })
             }
             "offer" => {
                 exact_keys(object, &["kind", "transfer"])?;

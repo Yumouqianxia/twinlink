@@ -30,6 +30,10 @@ pub struct Message {
     /// `direct` or `mailbox`; absent while still pending locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recalled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall_pending: bool,
 }
 
 fn default_delivery() -> String {

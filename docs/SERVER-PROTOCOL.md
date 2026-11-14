@@ -82,7 +82,8 @@ Suggested authenticated plaintext JSON variants (camelCase, validate strictly):
 
 ```text
 {kind:"message", message:{id,text,timestamp}}
-{kind:"receipt", messageId:<original message UUID>}
+{kind:"receipt", messageId:<message UUID or recall event UUID>}
+{kind:"recall", id:<original message UUID>, timestamp:<original sent milliseconds>}
 {kind:"offer", transfer:{id,name,size,hash:<plaintext SHA256 hex>}}
 {kind:"fileComplete", id:<transfer UUID>}
 {kind:"cancel", id:<transfer UUID>}
@@ -95,6 +96,13 @@ incoming envelope. Receiving a duplicate message should re-queue its receipt,
 not show a duplicate bubble. `uploaded/stored` means the server accepted it;
 `delivered` requires a direct authenticated ACK or a decrypted receipt.
 No receipt implies no delivery claim. Local outbox remains on disk across restarts.
+
+Recall applies only to the authenticated sender's text message in the same
+room, without a time limit on the original message. The receiver replaces the
+body with a durable recall marker, including when the recall arrives first.
+The receipt acknowledges the recall event UUID independently of the original
+message. The sender retains the encrypted recall until this receipt arrives,
+and may post it again after the server's normal event expiry.
 
 ## Resumable encrypted files
 

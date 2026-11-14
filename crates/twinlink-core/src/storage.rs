@@ -15,10 +15,26 @@ fn delivery_rank(value: &str) -> u8 {
     }
 }
 
-fn save_message_tx(tx: &rusqlite::Transaction<'_>, room: &str, message: &Message) -> Result<()> {
-    tx.execute(
+fn insert_message(conn: &Connection, room: &str, message: &Message) -> Result<bool> {
+    Ok(conn.execute(
         "INSERT OR IGNORE INTO messages(room,id,timestamp,value) VALUES(?1,?2,?3,?4)",
         params![room, message.id, message.timestamp, serde_json::to_string(message)?],
+    )? != 0)
+}
+
+fn read_message(conn: &Connection, room: &str, id: &str) -> Result<Option<Message>> {
+    let raw: Option<String> = conn.query_row(
+        "SELECT value FROM messages WHERE room=?1 AND id=?2",
+        params![room, id],
+        |row| row.get(0),
+    ).optional()?;
+    raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into)).transpose()
+}
+
+fn update_message(conn: &Connection, room: &str, message: &Message) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET value=?3 WHERE room=?1 AND id=?2",
+        params![room, message.id, serde_json::to_string(message)?],
     )?;
     Ok(())
 }
@@ -156,12 +172,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn save_message(&self, room: &str, message: &Message) -> Result<()> {
-        self.0.lock().unwrap().execute(
-            "INSERT OR IGNORE INTO messages(room,id,timestamp,value) VALUES(?1,?2,?3,?4)",
-            params![room, message.id, message.timestamp, serde_json::to_string(message)?],
-        )?;
-        Ok(())
+    pub fn save_message(&self, room: &str, message: &Message) -> Result<bool> {
+        insert_message(&self.0.lock().unwrap(), room, message)
     }
 
     pub fn messages(&self, room: &str) -> Result<Vec<Message>> {
@@ -213,7 +225,7 @@ impl Store {
     ) -> Result<()> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
-        save_message_tx(&tx, room, message)?;
+        insert_message(&tx, room, message)?;
         enqueue_event_tx(&tx, room, event_id, dedupe, "message", recipient, envelope, due_at)?;
         tx.commit()?;
         Ok(())
@@ -249,37 +261,79 @@ impl Store {
     }
 
     pub fn message(&self, room: &str, id: &str) -> Result<Option<Message>> {
-        let raw: Option<String> = self.0.lock().unwrap()
-            .query_row(
-                "SELECT value FROM messages WHERE room=?1 AND id=?2",
-                params![room, id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into)).transpose()
+        read_message(&self.0.lock().unwrap(), room, id)
     }
 
-    pub fn has_message(&self, room: &str, id: &str) -> Result<bool> {
-        let count: i64 = self.0.lock().unwrap().query_row(
-            "SELECT COUNT(*) FROM messages WHERE room=?1 AND id=?2",
-            params![room, id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+    /// Remove the original from the retry queue and enqueue the recall in the
+    /// same transaction that clears the visible message.
+    pub fn enqueue_recall(&self, room: &str, id: &str, event_id: &str, recipient: &str, envelope: &[u8], due_at: u64) -> Result<Message> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut message = read_message(&tx, room, id)?.ok_or_else(|| anyhow::anyhow!("找不到要撤回的消息"))?;
+        anyhow::ensure!(message.outgoing, "只能撤回自己发出的消息");
+        if !message.recalled {
+            message.text.clear();
+            message.recalled = true;
+            message.recall_pending = true;
+            update_message(&tx, room, &message)?;
+            tx.execute(
+                "DELETE FROM outbox WHERE room=?1 AND kind='message' AND (dedupe=?2 OR dedupe='message:'||?2)",
+                params![room, id],
+            )?;
+            enqueue_event_tx(&tx, room, event_id, &format!("recall:{id}"), "recall", recipient, envelope, due_at)?;
+        }
+        tx.commit()?;
+        Ok(message)
+    }
+
+    /// An early recall occupies the original message ID, so a delayed
+    /// direct or mailbox copy can never reinsert the text.
+    pub fn receive_recall(&self, room: &str, id: &str, timestamp: u64) -> Result<Option<Message>> {
+        let conn = self.0.lock().unwrap();
+        if let Some(mut message) = read_message(&conn, room, id)? {
+            if message.outgoing || message.recalled {
+                return Ok(None);
+            }
+            message.recalled = true;
+            message.text.clear();
+            update_message(&conn, room, &message)?;
+            return Ok(Some(message));
+        }
+        let message = Message {
+            id: id.into(),
+            text: String::new(),
+            outgoing: false,
+            timestamp,
+            delivery: "delivered".into(),
+            via: None,
+            recalled: true,
+            recall_pending: false,
+        };
+        insert_message(&conn, room, &message)?;
+        Ok(Some(message))
     }
 
     /// Only messages with an original durable outbox are eligible. Stored is
     /// server acceptance, not a device receipt, and remains replayable.
-    pub fn unconfirmed_outgoing_page(&self, room: &str, after: i64, limit: usize) -> Result<Vec<(i64, Message)>> {
+    pub fn unconfirmed_outgoing_page(&self, room: &str, after: i64, limit: usize, recalls: bool) -> Result<Vec<(i64, String, Message)>> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT o.rowid,m.value FROM messages m
-             JOIN outbox o ON o.room=m.room AND (o.dedupe=m.id OR o.dedupe='message:'||m.id) AND o.kind='message'
+            "SELECT o.rowid,o.event_id,m.value FROM outbox o
+             JOIN messages m ON o.room=m.room AND m.id=CASE
+                WHEN o.kind='recall' THEN substr(o.dedupe,8)
+                WHEN o.dedupe LIKE 'message:%' THEN substr(o.dedupe,9)
+                ELSE o.dedupe END
              WHERE m.room=?1 AND o.state IN ('pending','stored') AND o.rowid>?2
+             AND (o.kind='message' OR (?4 AND o.kind='recall'))
              ORDER BY o.rowid ASC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![room, after, limit as i64], |row| Ok((row.get::<_,i64>(0)?, row.get::<_,String>(1)?)))?;
-        rows.map(|row| { let (cursor, raw) = row?; Ok((cursor, serde_json::from_str(&raw)?)) }).collect()
+        let rows = stmt.query_map(params![room, after, limit as i64, recalls], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        rows.map(|row| {
+            let (cursor, event_id, raw) = row?;
+            Ok((cursor, event_id, serde_json::from_str(&raw)?))
+        }).collect()
     }
 
     /// Delivery is monotonic: a delayed mailbox "stored" acknowledgement can
@@ -315,30 +369,32 @@ impl Store {
     pub fn apply_receipt(&self, room: &str, message_id: &str, event_id: Option<&str>, via: &str) -> Result<Option<Message>> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
-        let raw: Option<String> = tx
-            .query_row(
-                "SELECT value FROM messages WHERE room=?1 AND id=?2",
-                params![room, message_id],
-                |row| row.get(0),
-            )
+        let recall: Option<String> = tx.query_row(
+            "SELECT substr(dedupe,8) FROM outbox WHERE room=?1 AND event_id=?2 AND kind='recall'",
+            params![room, message_id],
+            |row| row.get(0),
+        )
             .optional()?;
         let mut changed = None;
-        if let Some(raw) = raw {
-            let mut message: Message = serde_json::from_str(&raw)?;
-            if delivery_rank(&message.delivery) < delivery_rank("delivered") {
-                message.delivery = "delivered".into();
-                message.via = Some(via.into());
-                tx.execute(
-                    "UPDATE messages SET value=?3 WHERE room=?1 AND id=?2",
-                    params![room, message_id, serde_json::to_string(&message)?],
-                )?;
+        if let Some(id) = recall {
+            if let Some(mut message) = read_message(&tx, room, &id)? {
+                message.recall_pending = false;
+                update_message(&tx, room, &message)?;
                 changed = Some(message);
             }
+            tx.execute("DELETE FROM outbox WHERE room=?1 AND event_id=?2", params![room, message_id])?;
+        } else if let Some(mut message) = read_message(&tx, room, message_id)? {
+            if message.outgoing && !message.recalled && delivery_rank(&message.delivery) < delivery_rank("delivered") {
+                message.delivery = "delivered".into();
+                message.via = Some(via.into());
+                update_message(&tx, room, &message)?;
+                changed = Some(message);
+            }
+            tx.execute(
+                "DELETE FROM outbox WHERE room=?1 AND kind='message' AND (dedupe=?2 OR dedupe='message:'||?2)",
+                params![room, message_id],
+            )?;
         }
-        tx.execute(
-            "DELETE FROM outbox WHERE room=?1 AND (dedupe=?2 OR dedupe=?3)",
-            params![room, message_id, format!("message:{message_id}")],
-        )?;
         if let Some(event_id) = event_id { tx.execute(
             "INSERT OR IGNORE INTO seen_events(room,event_id,processed_at) VALUES(?1,?2,?3)",
             params![room, event_id, now()],
@@ -373,7 +429,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT event_id,kind,dedupe,envelope,attempts FROM outbox
              WHERE room=?1 AND state='pending' AND next_attempt<=?2
-             ORDER BY CASE WHEN kind IN('receipt','fileComplete','fileAction') THEN 0 ELSE 1 END,created_at ASC LIMIT ?3",
+             ORDER BY CASE WHEN kind IN('receipt','recall','fileComplete','fileAction') THEN 0 ELSE 1 END,created_at ASC LIMIT ?3",
         )?;
         let raw = stmt.query_map(params![room, at, limit as i64], |row| {
             Ok(OutboxRow {
@@ -396,6 +452,14 @@ impl Store {
         Ok(count as usize)
     }
 
+    pub fn schedule_recall_refresh(&self, room: &str, event_id: &str, at: u64) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "UPDATE outbox SET next_attempt=?3, attempts=0, last_error=NULL WHERE room=?1 AND event_id=?2",
+            params![room, event_id, at],
+        )?;
+        Ok(())
+    }
+
     /// A chat event was accepted by the mailbox. Promote the persisted message
     /// to `stored` in the same transaction so the UI cannot claim delivery.
     pub fn mark_message_stored(&self, room: &str, event_id: &str) -> Result<Option<Message>> {
@@ -415,7 +479,7 @@ impl Store {
         let mut changed = None;
         if let Some(raw) = raw {
             let mut message: Message = serde_json::from_str(&raw)?;
-            if delivery_rank(&message.delivery) < delivery_rank("stored") {
+            if !message.recalled && delivery_rank(&message.delivery) < delivery_rank("stored") {
                 message.delivery = "stored".into();
                 message.via = Some("mailbox".into());
                 tx.execute(
@@ -757,8 +821,21 @@ impl Store {
         let tx = conn.transaction()?;
         let (mut messages_added, mut transfers_added) = (0, 0);
         for row in messages {
-            messages_added += tx.execute("INSERT OR IGNORE INTO messages(room,id,timestamp,value) VALUES(?1,?2,?3,?4)",
-                params![row.room, row.message.id, row.message.timestamp, serde_json::to_string(&row.message)?])?;
+            if insert_message(&tx, &row.room, &row.message)? {
+                messages_added += 1;
+            } else if row.message.recalled {
+                if let Some(mut existing) = read_message(&tx, &row.room, &row.message.id)? {
+                    if existing.outgoing == row.message.outgoing && !existing.recalled {
+                        existing.recalled = true;
+                        existing.text.clear();
+                        update_message(&tx, &row.room, &existing)?;
+                        tx.execute(
+                            "DELETE FROM outbox WHERE room=?1 AND kind='message' AND (dedupe=?2 OR dedupe='message:'||?2)",
+                            params![row.room, row.message.id],
+                        )?;
+                    }
+                }
+            }
         }
         for row in transfers {
             transfers_added += tx.execute("INSERT OR IGNORE INTO transfers(room,id,value) VALUES(?1,?2,?3)",

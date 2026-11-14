@@ -94,6 +94,11 @@ async fn send_message(state: State<'_, AppState>, text: String) -> Reply<Message
 }
 
 #[tauri::command]
+async fn recall_message(state: State<'_, AppState>, room_id: String, id: String) -> Reply<Message> {
+    state.0.recall_message(&room_id, Uuid::parse_str(&id).map_err(error)?).await.map_err(error)
+}
+
+#[tauri::command]
 async fn offer_file(state: State<'_, AppState>, path: String) -> Reply<Transfer> {
     state.0.offer_file(PathBuf::from(path)).await.map_err(error)
 }
@@ -204,6 +209,7 @@ fn main() {
             export_data,
             import_data,
             send_message,
+            recall_message,
             offer_file,
             accept_file,
             reject_file,

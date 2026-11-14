@@ -74,6 +74,14 @@ const bytes = (n: number) => {
 const clock = (timestamp: number) =>
   new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
+const chatDate = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+
+function chatTime(timestamp: number, unknown: string): string {
+  const date = new Date(timestamp);
+  if (timestamp <= 0 || !Number.isFinite(date.getTime())) return `<span>${unknown}</span>`;
+  return `<time datetime="${date.toISOString()}">${chatDate.format(date)} ${clock(timestamp)}</time>`;
+}
+
 const brandMark = `<svg class="brand-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true" focusable="false">
   <rect x="2.4" y="6.6" width="8.6" height="14.8" rx="3.2" fill="currentColor"/>
   <rect x="17" y="6.6" width="8.6" height="14.8" rx="3.2" fill="currentColor" fill-opacity=".32"/>
@@ -133,6 +141,7 @@ let roomEpoch = 0;
  * user just left. */
 let stateEpoch = 0;
 let historyHasMore = false;
+let historyCursor: string | null = null;
 let historyLoading = false;
 /* Last message id painted into the thread, so a receipt update is not mistaken
  * for an appended message. */
@@ -506,6 +515,18 @@ $('#app').innerHTML = `
     </div>
   </div>
 </dialog>
+<dialog class="dialog" id="dlg-recall" aria-labelledby="recall-title" aria-describedby="recall-help">
+  <div class="dialog-form">
+    <div class="dialog-head"><div>
+      <h2 id="recall-title">撤回这条消息？</h2>
+      <p id="recall-help">对方同步后，这条消息会替换为撤回提示。</p>
+    </div></div>
+    <div class="dialog-foot">
+      <button type="button" class="btn quiet dialog-close" autofocus>取消</button>
+      <button type="button" class="btn danger" id="recall-confirm">确认撤回</button>
+    </div>
+  </div>
+</dialog>
 <dialog class="image-dialog" id="dlg-image" aria-labelledby="image-title">
   <div class="image-dialog-head"><h2 id="image-title">图片预览</h2><button type="button" class="icon-btn dialog-close" aria-label="关闭图片预览">${icon('close')}</button></div>
   <div class="image-dialog-stage"><img id="image-full" alt="" /><p id="image-unavailable" hidden>图片无法预览，可能已被移动、删除，或超过预览限制。</p></div>
@@ -614,16 +635,25 @@ const deliveryHints: Record<Message['delivery'], string> = {
 
 function messageMarkup(message: Message): string {
   const who = message.outgoing ? '我' : (state.peerName ?? '对方');
-  const stamp = new Date(message.timestamp);
+  const time = chatTime(message.timestamp, '日期未知');
   const via = message.via === 'direct' ? '，联机直发' : message.via === 'mailbox' ? '，离线信箱' : '';
-  const delivery = message.outgoing
+  const delivery = message.outgoing && !message.recalled
     ? `<span class="msg-status" data-delivery="${esc(message.delivery)}" title="${
         esc(`${deliveryHints[message.delivery] ?? deliveryHints.unknown}${via}`)
       }">${deliveryLabels[message.delivery] ?? deliveryLabels.unknown}</span>`
     : '';
+  const recallAction = message.outgoing && !message.recalled && state.room && !state.preview
+    ? `<button type="button" class="msg-recall" data-recall="${esc(message.id)}">撤回</button>`
+    : '';
+  const recallStatus = message.outgoing && message.recallPending
+    ? '<span class="msg-status">等待对方同步</span>'
+    : '';
+  const content = message.recalled
+    ? `<div class="msg-recalled" role="status">${message.outgoing ? '你撤回了一条消息' : '对方撤回了一条消息'}</div>`
+    : `<div class="msg-bubble">${esc(message.text)}</div>`;
   return `<li class="msg ${message.outgoing ? 'out' : 'in'}" data-id="${esc(message.id)}">
-    <div class="msg-meta"><span class="msg-who">${esc(who)}</span><time datetime="${stamp.toISOString()}">${clock(message.timestamp)}</time>${delivery}</div>
-    <div class="msg-bubble">${esc(message.text)}</div>
+    <div class="msg-meta"><span class="msg-who">${esc(who)}</span>${time}${delivery}${recallStatus}${recallAction}</div>
+    ${content}
   </li>`;
 }
 
@@ -635,8 +665,10 @@ function syncRoomWindow() {
   viewRoomId = id;
   roomEpoch += 1;
   $<HTMLDialogElement>('#dlg-image').close();
+  $<HTMLDialogElement>('#dlg-recall').close();
   historyLoading = false;
   historyHasMore = state.messages.length >= 200;
+  historyCursor = state.messages[0]?.id ?? null;
   /* A different room starts a different transcript: land on the newest page. */
   renderedLastId = null;
   forceScroll = true;
@@ -719,7 +751,7 @@ function renderThread(options: { keepAnchor?: { height: number; top: number } } 
 
 async function loadEarlier() {
   if (historyLoading || !historyHasMore) return;
-  const before = state.messages[0]?.id;
+  const before = historyCursor ?? state.messages[0]?.id;
   if (!before || !viewRoomId) return;
   const epoch = roomEpoch;
   const room = viewRoomId;
@@ -731,13 +763,10 @@ async function loadEarlier() {
     const page = await api.history(before);
     /* A room switch while this request was in flight invalidates the result. */
     if (epoch !== roomEpoch || page.roomId !== room) return;
-    /* A paged result is a snapshot from when the server read it: its newest row
-     * may overlap the loaded window with an older delivery state. Keep the local
-     * copy for known ids (a receipt may have landed meanwhile) and prepend only
-     * messages that are genuinely new. */
-    const known = new Set(state.messages.map(message => message.id));
-    const older = page.messages.filter(message => !known.has(message.id));
-    state.messages = older.concat(state.messages);
+    // A recall may arrive for a row older than the current page. Only the
+    // history response advances the cursor, so intervening rows stay reachable.
+    state.messages = mergeMessages(state.messages, page.messages);
+    historyCursor = page.messages[0]?.id ?? before;
     historyHasMore = page.hasMore;
     renderThread({ keepAnchor: anchor });
   } catch (error) {
@@ -792,8 +821,7 @@ function attachmentMarkup(transfer: Transfer): string {
   const image = imageCandidate(transfer);
   const available = image && (transfer.outgoing || transfer.status === 'completed') && !!state.room && !state.preview;
   const url = available ? api.imagePreviewUrl(state.room!.roomId, transfer.id) : '';
-  const timestamp = transfer.timestamp && transfer.timestamp <= 8.64e15 ? transfer.timestamp : 0;
-  const time = timestamp ? `<time datetime="${new Date(timestamp).toISOString()}">${clock(timestamp)}</time>` : '<span>早期文件记录</span>';
+  const time = chatTime(transfer.timestamp ?? 0, '日期未知');
   return `<li class="msg attachment-msg ${transfer.outgoing ? 'out' : 'in'}" data-id="${esc(transfer.id)}">
     <div class="msg-meta"><span class="msg-who">${esc(transfer.outgoing ? '我' : state.peerName ?? '对方')}</span>${time}</div>
     <div class="attachment-bubble">
@@ -1167,6 +1195,16 @@ function rankOf(delivery: Delivery): number {
  * a stale snapshot can rewrite when the message was written or who it is. */
 function mergeDelivery(current: Message, incoming: Message): Message {
   if (current.id !== incoming.id) return incoming;
+  if (current.recalled || incoming.recalled) {
+    const recalled = current.recalled ? current : incoming;
+    return {
+      ...recalled,
+      text: '',
+      recallPending: current.recalled && incoming.recalled
+        ? Boolean(current.recallPending && incoming.recallPending)
+        : recalled.recallPending,
+    };
+  }
   const before = rankOf(current.delivery);
   const after = rankOf(incoming.delivery);
   if (after > before) {
@@ -1227,6 +1265,7 @@ function adoptSnapshot(snapshot: Snapshot) {
   const carriedTransfers = sameRoom ? state.transfers : [];
   state = snapshot;
   if (sameRoom) {
+    historyCursor ??= snapshot.messages[0]?.id ?? null;
     state.messages = mergeMessages(carried, snapshot.messages);
     state.transfers = mergeTransfers(carriedTransfers, snapshot.transfers);
   }
@@ -2127,6 +2166,28 @@ async function handleTransferAction(event: Event) {
 }
 $('.transfers').addEventListener('click', handleTransferAction);
 $('.messages').addEventListener('click', handleTransferAction);
+const recallDialog = $<HTMLDialogElement>('#dlg-recall');
+$('.messages').addEventListener('click', event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-recall]');
+  if (!button?.dataset.recall || !state.room) return;
+  recallDialog.dataset.messageId = button.dataset.recall;
+  recallDialog.dataset.roomId = state.room.roomId;
+  recallDialog.showModal();
+});
+$('#recall-confirm').addEventListener('click', async () => {
+  const { messageId, roomId } = recallDialog.dataset;
+  if (!messageId || !roomId || state.room?.roomId !== roomId) return;
+  const epoch = stateEpoch;
+  recallDialog.close();
+  try {
+    const message = await api.recallMessage(roomId, messageId);
+    if (epoch !== stateEpoch) return;
+    mergeMessage(message);
+    renderThread();
+  } catch (error) {
+    if (epoch === stateEpoch) toast(`撤回失败：${String(error)}`);
+  }
+});
 $('.messages').addEventListener('click', event => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-preview]');
   const transfer = state.transfers.find(item => item.id === button?.dataset.preview);

@@ -43,6 +43,7 @@ struct Inner {
     connection: String,
     peer_name: Option<String>,
     sender: Option<mpsc::Sender<Frame>>,
+    peer_can_recall: bool,
     room: Option<StoredRoom>,
     paused: bool,
     reconnect: Option<ReconnectStatus>,
@@ -181,6 +182,7 @@ impl Core {
                 connection: "disconnected".into(),
                 peer_name: None,
                 sender: None,
+                peer_can_recall: false,
                 room: saved.room.clone(),
                 paused: saved.paused,
                 reconnect: None,
@@ -747,6 +749,35 @@ impl Core {
         Ok(message)
     }
 
+    pub async fn recall_message(&self, room_id: &str, id: Uuid) -> Result<Message> {
+        let _operation = self.operations.lock().await;
+        let (spec, sender) = {
+            let inner = self.inner.lock().await;
+            let spec = inner.room.as_ref().context("请先恢复原会话")?.spec()?;
+            anyhow::ensure!(spec.room_id == room_id, "会话已切换");
+            (spec, inner.sender.clone().filter(|_| inner.peer_can_recall))
+        };
+        let original = self.store.message(room_id, &id.to_string())?.context("找不到要撤回的消息")?;
+        anyhow::ensure!(original.outgoing, "只能撤回自己发出的消息");
+        if original.recalled {
+            return Ok(original);
+        }
+        let event_id = Uuid::new_v4();
+        let message = self.queue_message_recall(&spec, &original, event_id, sender.is_some()).await?;
+        if let Some(sender) = sender {
+            let _ = sender.try_send(Frame::Control(Control::Recall { id, event_id, timestamp: message.timestamp }));
+        }
+        Ok(message)
+    }
+
+    async fn receive_recall(&self, room_id: &str, id: Uuid, timestamp: u64) -> Result<()> {
+        anyhow::ensure!(timestamp <= i64::MAX as u64, "撤回消息时间无效");
+        if let Some(message) = self.store.receive_recall(room_id, &id.to_string(), timestamp)? {
+            self.emit_in_room(room_id, AppEvent::Message { message }).await;
+        }
+        Ok(())
+    }
+
     pub async fn offer_file(&self, path: PathBuf) -> Result<Transfer> {
         if let Some(transfer) = self.direct_offer(&path).await? { return Ok(transfer); }
         self.mailbox_offer_file(path).await
@@ -804,6 +835,7 @@ impl Core {
                 direct.supported = peer.files;
             }
             inner.sender = Some(tx.clone());
+            inner.peer_can_recall = peer.recall;
             inner.connection = "connected".into();
             inner.peer_name = Some(peer.name.clone());
             inner.reconnect = None;
@@ -836,10 +868,15 @@ impl Core {
                         receipts_in_a_row = 0;
                         last_was_retry = false;
                         frame
-                    } else if let Some(message) = retry {
+                    } else if let Some((event_id, message)) = retry {
                         receipts_in_a_row = 0;
                         last_was_retry = true;
-                        Frame::Control(Control::Chat { id: Uuid::parse_str(&message.id)?, text: message.text, timestamp: message.timestamp })
+                        let id = Uuid::parse_str(&message.id)?;
+                        if message.recalled {
+                            Frame::Control(Control::Recall { id, event_id: Uuid::parse_str(&event_id)?, timestamp: message.timestamp })
+                        } else {
+                            Frame::Control(Control::Chat { id, text: message.text, timestamp: message.timestamp })
+                        }
                     } else if let Ok(frame) = rx.try_recv() {
                         receipts_in_a_row = 0;
                         last_was_retry = false;
@@ -860,9 +897,19 @@ impl Core {
                     }
                 };
                 anyhow::ensure!(self.generation_is_current(room_id, generation).await, "连接已改变");
-                wire::write_frame(&mut writer, &frame).await?;
                 if let Frame::Control(Control::Chat { id, .. }) = &frame {
-                    pending.lock().await.record_sent(&id.to_string(), Instant::now());
+                    let id = id.to_string();
+                    if self.store.message(room_id, &id)?.is_some_and(|message| message.recalled) {
+                        pending.lock().await.acknowledged(&id);
+                        continue;
+                    }
+                }
+                wire::write_frame(&mut writer, &frame).await?;
+                match &frame {
+                    Frame::Control(Control::Chat { id, .. }) |
+                    Frame::Control(Control::Recall { event_id: id, .. }) =>
+                        pending.lock().await.record_sent(&id.to_string(), Instant::now()),
+                    _ => {}
                 }
             }
             Ok::<(), anyhow::Error>(())
@@ -937,33 +984,27 @@ impl Core {
                 if text.trim().is_empty() || text.len() > 16 * 1024 {
                     bail!("对方发送了无效消息");
                 }
-                let (room, duplicate) = {
-                    let room = room_id.to_owned();
-                    let duplicate = self.store.has_message(&room, &id.to_string())?;
-                    (room, duplicate)
+                let message = Message {
+                    id: id.to_string(),
+                    text,
+                    outgoing: false,
+                    timestamp: if timestamp == 0 { now() } else { timestamp },
+                    delivery: "delivered".into(),
+                    via: Some("direct".into()),
+                    recalled: false,
+                    recall_pending: false,
                 };
-                if !duplicate {
-                    // Does the durable mailbox already own this message? A direct
-                    // copy must not overwrite its pending/stored state or the
-                    // server fallback still in flight.
-                    let owned = self.store.message(&room, &id.to_string())?;
-                    let message = match owned {
-                        Some(existing) => existing,
-                        None => Message {
-                            id: id.to_string(),
-                            text,
-                            outgoing: false,
-                            timestamp: if timestamp == 0 { now() } else { timestamp },
-                            delivery: "delivered".into(),
-                            via: Some("direct".into()),
-                        },
-                    };
-                    self.store.save_message(&room, &message)?;
-                    self.emit_in_room(&room, AppEvent::Message { message }).await;
+                if self.store.save_message(room_id, &message)? {
+                    self.emit_in_room(room_id, AppEvent::Message { message }).await;
                 }
                 // A retransmitted chat must always be re-acknowledged: the first
                 // receipt may itself have been lost on the way back.
                 pending.lock().await.receipt(id)?;
+            }
+            Frame::Control(Control::Recall { id, event_id, timestamp }) => {
+                anyhow::ensure!(self.inner.lock().await.peer_can_recall, "撤回功能未协商");
+                self.receive_recall(room_id, id, timestamp).await?;
+                pending.lock().await.receipt(event_id)?;
             }
             Frame::Control(Control::Offer { id, name, size, hash }) => {
                 if self.direct.lock().await.supported {
@@ -997,19 +1038,23 @@ impl Core {
     ) -> Result<()> {
         let _operation = self.operations.lock().await;
         anyhow::ensure!(self.generation_is_current(room_id, generation).await, "连接已改变");
+        let recalls = self.inner.lock().await.peer_can_recall;
         let mut state = state.lock().await;
-        let mut rows = self.store.unconfirmed_outgoing_page(room_id, state.cursor, session::BATCH)?;
+        let mut rows = self.store.unconfirmed_outgoing_page(room_id, state.cursor, session::BATCH, recalls)?;
         if rows.is_empty() {
             state.cursor = 0;
-            rows = self.store.unconfirmed_outgoing_page(room_id, 0, session::BATCH)?;
+            rows = self.store.unconfirmed_outgoing_page(room_id, 0, session::BATCH, recalls)?;
         }
         let now = Instant::now();
         let mut queued = 0;
-        for (cursor, message) in rows {
+        for (cursor, event_id, message) in rows {
             state.cursor = cursor;
-            if !message.outgoing || !matches!(message.delivery.as_str(), "pending" | "stored" | "unknown") || !state.due(&message.id, now) { continue; }
-            if Uuid::parse_str(&message.id).is_err() { continue; }
-            if !state.retry(message) { break; }
+            let awaiting_receipt = if message.recalled { message.recall_pending } else {
+                matches!(message.delivery.as_str(), "pending" | "stored" | "unknown")
+            };
+            if !message.outgoing || !awaiting_receipt || !state.due(&event_id, now) { continue; }
+            if Uuid::parse_str(&message.id).is_err() || Uuid::parse_str(&event_id).is_err() { continue; }
+            if !state.retry(event_id, message) { break; }
             queued += 1;
             if queued >= session::PER_TICK { break; }
         }

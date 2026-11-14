@@ -1,4 +1,4 @@
-//! Bounded per-connection chat retry bookkeeping; wire format is unchanged.
+//! Bounded per-connection chat and recall retry bookkeeping.
 use crate::model::Message;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -20,7 +20,7 @@ pub(crate) struct SessionState {
     pub queued: HashSet<String>,
     sent: HashMap<String, (Instant, u32)>,
     receipts: VecDeque<Uuid>,
-    retries: VecDeque<Message>,
+    retries: VecDeque<(String, Message)>,
     pub receipt_ready: Arc<Notify>,
 }
 
@@ -57,7 +57,7 @@ impl SessionState {
     pub fn acknowledged(&mut self, id: &str) {
         self.sent.remove(id);
         self.queued.remove(id);
-        self.retries.retain(|message| message.id != id);
+        self.retries.retain(|(event_id, _)| event_id != id);
     }
 
     pub fn receipt(&mut self, id: Uuid) -> anyhow::Result<()> {
@@ -81,16 +81,16 @@ impl SessionState {
     pub fn has_receipts(&self) -> bool {
         !self.receipts.is_empty()
     }
-    pub fn retry(&mut self, message: Message) -> bool {
+    pub fn retry(&mut self, event_id: String, message: Message) -> bool {
         if self.retries.len() >= 4 {
             return false;
         }
-        self.queued.insert(message.id.clone());
-        self.retries.push_back(message);
+        self.queued.insert(event_id.clone());
+        self.retries.push_back((event_id, message));
         self.receipt_ready.notify_one();
         true
     }
-    pub fn pop_retry(&mut self) -> Option<Message> {
+    pub fn pop_retry(&mut self) -> Option<(String, Message)> {
         self.retries.pop_front()
     }
     pub fn has_retries(&self) -> bool {

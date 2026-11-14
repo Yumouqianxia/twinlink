@@ -27,6 +27,9 @@ use uuid::Uuid;
 
 const TICK: Duration = Duration::from_millis(900);
 const DIRECT_GRACE_MS: u64 = 1_500;
+// Mailbox events expire after seven days on the server. Retain a recall
+// locally until an authenticated peer receipt and refresh before expiry.
+const RECALL_REFRESH_MS: u64 = 24 * 60 * 60 * 1000;
 const RETRY_CAP: Duration = Duration::from_secs(30);
 const CHUNKS_PER_TICK: u64 = 4;
 
@@ -181,10 +184,11 @@ impl Core {
                     return Ok(());
                 }
             }
+            let mut changed = changes.clone();
             tokio::select! {
                 _ = sleep(TICK) => {},
                 _ = self.mailbox_wake.notified() => {},
-                _ = changes.changed() => {},
+                _ = changed.changed() => return Ok(()),
                 _ = self.shutdown.cancelled() => return Ok(()),
             }
         }
@@ -210,6 +214,7 @@ impl Core {
         duration: Duration,
     ) -> bool {
         let deadline = tokio::time::Instant::now() + duration;
+        let mut changed = changes.clone();
         loop {
             if self.session_stale(changes, generation) {
                 return true;
@@ -218,7 +223,7 @@ impl Core {
                 _ = tokio::time::sleep_until(deadline) => {
                     return self.session_stale(changes, generation);
                 },
-                _ = changes.changed() => {},
+                _ = changed.changed() => {},
                 _ = self.shutdown.cancelled() => return true,
             }
         }
@@ -325,6 +330,11 @@ impl Core {
                             return Err(db_error("无法保存消息状态"));
                         }
                     }
+                } else if row.kind == "recall" {
+                    let at = now().saturating_add(RECALL_REFRESH_MS)
+                        .min(created.expires_at.saturating_add(1))
+                        .max(now().saturating_add(DIRECT_GRACE_MS));
+                    self.store.schedule_recall_refresh(room_id, &row.event_id, at).map_err(db_error)?;
                 } else {
                     if row.kind == "fileAction" {
                         if let Some(id) = row.dedupe.strip_prefix("file-cancel-").or_else(||row.dedupe.strip_prefix("file-reject-")) {
@@ -393,13 +403,11 @@ impl Core {
         }
         // A poison event stays quarantined on the server so a human can inspect
         // it; repeated ticks do not re-emit the error.
-        if self.store.has_quarantined_event(room_id, &event.id).unwrap_or(false) {
-            return Ok(());
-        }
+        let quarantined = self.store.has_quarantined_event(room_id, &event.id).unwrap_or(false);
         let payload = match base64_decode(&event.payload) {
             Ok(payload) => payload,
             Err(error) => {
-                self.quarantine(room_id, &event, "离线消息编码无效").await?;
+                if !quarantined { self.quarantine(room_id, &event, "离线消息编码无效").await?; }
                 let _ = error;
                 return Ok(());
             }
@@ -414,35 +422,38 @@ impl Core {
         ) {
             Ok(plaintext) => plaintext,
             Err(_) => {
-                self.quarantine(room_id, &event, "无法验证的离线消息").await?;
+                if !quarantined { self.quarantine(room_id, &event, "无法验证的离线消息").await?; }
                 return Ok(());
             }
         };
         let body = match Body::decode(&plaintext) {
             Ok(body) => body,
             Err(_) => {
-                self.quarantine(room_id, &event, "离线消息格式无效").await?;
+                if !quarantined { self.quarantine(room_id, &event, "离线消息格式无效").await?; }
                 return Ok(());
             }
         };
+        // Older clients could quarantine a valid recall before an upgrade.
+        let is_recall = matches!(&body, Body::Recall { .. });
+        if quarantined && !is_recall { return Ok(()); }
         // Apply the effect first. Only after the local state is durable do we
         // acknowledge to the server, so a crash can never lose a message.
         let result: Result<()> = match body {
             Body::Message { id, text, timestamp } => {
                 self.receive_mailbox_message(room_id, &id, text, timestamp).await
             }
-            Body::Receipt { message_id } => {
-                match self.store.apply_receipt(room_id, &message_id, Some(&event.id), "mailbox") {
-                    Ok(Some(message)) => {
-                        self.emit_in_room(room_id, crate::model::AppEvent::Message { message }).await
-                    }
-                    Ok(None) => {}
-                    Err(_) => {}
+            Body::Recall { id, timestamp } => async {
+                let _operation = self.operations.lock().await;
+                self.receive_recall(room_id, Uuid::parse_str(&id)?, timestamp).await?;
+                self.enqueue_receipt(room_id, &event.id).await
+            }.await,
+            Body::Receipt { message_id } => async {
+                if let Some(message) = self.store.apply_receipt(room_id, &message_id, Some(&event.id), "mailbox")? {
+                    self.emit_in_room(room_id, crate::model::AppEvent::Message { message }).await;
                 }
-                // A receipt whose message is already delivered is still acked:
-                // apply_receipt records the seen marker atomically.
+                self.refresh_mailbox_pending(room_id).await;
                 Ok(())
-            }
+            }.await,
             Body::Offer { id, name, size, hash } => {
                 let _operation = self.operations.lock().await;
                 self.receive_offer(room_id, &id, name, size, hash).await
@@ -464,7 +475,11 @@ impl Core {
         }
         // Receipts already recorded their seen marker transactionally with the
         // effect; everything else is marked here before the server delete.
-        self.store.mark_seen_event(room_id, &event.id).map_err(db_error)?;
+        // A retry may mean the last receipt expired while the sender was
+        // offline. The durable message marker makes it safe to acknowledge again.
+        if !is_recall {
+            self.store.mark_seen_event(room_id, &event.id).map_err(db_error)?;
+        }
         if let Err(error) = client.delete_event(&event.id).await {
             if !error.is_missing() && error.retryable() {
                 return Err(error);
@@ -494,17 +509,17 @@ impl Core {
         text: String,
         timestamp: u64,
     ) -> Result<()> {
-        let duplicate = self.store.has_message(room_id, id)?;
-        if !duplicate {
-            let message = Message {
-                id: id.to_owned(),
-                text,
-                outgoing: false,
-                timestamp,
-                delivery: "delivered".into(),
-                via: Some("mailbox".into()),
-            };
-            self.store.save_message(room_id, &message)?;
+        let message = Message {
+            id: id.to_owned(),
+            text,
+            outgoing: false,
+            timestamp,
+            delivery: "delivered".into(),
+            via: Some("mailbox".into()),
+            recalled: false,
+            recall_pending: false,
+        };
+        if self.store.save_message(room_id, &message)? {
             self.emit_in_room(room_id, crate::model::AppEvent::Message { message }).await;
         }
         self.enqueue_receipt(room_id, id).await
@@ -1372,6 +1387,8 @@ impl Core {
             timestamp: now(),
             delivery: "pending".into(),
             via: None,
+            recalled: false,
+            recall_pending: false,
         };
         let plaintext = Body::Message {
             id: message.id.clone(),
@@ -1394,6 +1411,20 @@ impl Core {
         )?;
         self.emit_in_room(&room_id, crate::model::AppEvent::Message { message: message.clone() }).await;
         self.refresh_mailbox_pending(&room_id).await;
+        self.mailbox_wake.notify_one();
+        Ok(message)
+    }
+
+    pub(crate) async fn queue_message_recall(&self, spec: &crate::pairing::RoomSpec, original: &Message, event_id: Uuid, has_direct: bool) -> Result<Message> {
+        let role = &spec.stored.role;
+        let peer = peer_role(role)?;
+        let event_id = event_id.to_string();
+        let plaintext = Body::Recall { id: original.id.clone(), timestamp: original.timestamp }.encode()?;
+        let envelope = crypto::seal_event(&spec.stored.seed, &spec.room_id, role, peer, &event_id, &plaintext)?;
+        let due = now() + if has_direct { DIRECT_GRACE_MS } else { 0 };
+        let message = self.store.enqueue_recall(&spec.room_id, &original.id, &event_id, peer, &envelope, due)?;
+        self.emit_in_room(&spec.room_id, crate::model::AppEvent::Message { message: message.clone() }).await;
+        self.refresh_mailbox_pending(&spec.room_id).await;
         self.mailbox_wake.notify_one();
         Ok(message)
     }
