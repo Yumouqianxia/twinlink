@@ -1,18 +1,18 @@
 {
-  "version": "0.0.4",
-  "notes": "同频 TwinLink v0.0.4 · 预发布版\n\n- 修复聊天状态回退：服务器暂存或对方设备确认后，旧响应不再把消息显示为待发。\n- 联机恢复后，自动补发发件箱中尚未收到设备确认的消息，即使离线信箱暂时不可用。重试保留原消息和发送时间，接收方不会看到重复消息。\n- 聊天状态改为“尚未确认送达”“服务器已暂存”“已送达对方设备”。设备送达不代表用户已读。\n\n可从“设置 → 应用更新”升级，或下载对应平台的完整安装包。安装需确认并重启，正常升级保留本地聊天和房间数据。更新源固定为本仓库 GitHub。\n\n消息投递已通过本地回环故障测试及浏览器界面回归，仍待跨公网双机实测。\n",
+  "version": "0.0.5",
+  "notes": "同频 TwinLink v0.0.5 · 预发布版\n\n- 聊天中的消息和附件按本机时区显示具体日期和时间。\n- 自己发出的文字消息可以不限时撤回。两端均升级后，可通过直连即时同步，离线时由加密信箱补送。\n- 撤回后原文替换为“你撤回了一条消息”或“对方撤回了一条消息”。对方确认前显示“等待对方同步”。\n\n可从“设置 → 应用更新”升级，或下载对应平台的完整安装包。安装需确认并重启，正常升级保留本地聊天和房间数据。更新源固定为本仓库 GitHub。\n\n撤回已通过本机双端直连、离线信箱和浏览器界面回归。跨公网双机使用仍待实测。\n",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.4/TwinLink_0.0.4_darwin-aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDhkd1p6NWp5bjkxMy9mQmx6eTRBL3JOTUNUa0FQc2xkazBEeWY4SWlGQ3BrUVQ1Umw3NTJNL3NPamZKcnFlVVFlNTAxWklNL2RJMk5TcUFQN21IVkFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc2NTE4CWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC40Cm5NV0NGdGFkc0l1RmNWVnhjNnl2MjJRSGMwTWV3c2lYTUp2Q0ZFakVnS3pKcFFMUW1DTTJJTVNBYnJzcGRPTHBzNkJSWi90c0lpNmxLcVZ0RkU0SUNBPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.5/TwinLink_0.0.5_darwin-aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWHdxZm5DVi9uVnJ5VmZjRkdZY0ZDUXdqYmNKbVBvTnBmWFBCVENOcXdtWlBra0szakh4T3o1OEFCZFdDMjhUcHZ0eXA3M3ZqdXdUWlR1NWZaOFhhdEFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc4OTc5CWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC41CjgvMUtDS29DMnJ5aUJqNGdpZXJiUXhZWkhONG85a0pLajRZNjhNaWdkRFZXZ3p4WE45YlIxWTVqOWhEdkp1Y0JUQ3h3K0ZYUTZIeUMzbnlEYUxqTERRPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.4/TwinLink_0.0.4_darwin-x86_64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWHdveDZLSHI4Yk1PWkZFZFJCK1lBY2ZkbEJ5b29WMEpRMitRejIzOHNTTnRGM25Ham1JV2J0WThVcGxQRG03a2k1T2hUc2J4bnVsUTFsOUJ1RXBkTHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc2OTUzCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC40ClU2WWkxQy9sVHlNbjdndjNZSnlpS096eUxFSm52bkhoUjNITTlTVDFOSzRFcUVQZlNmVnk3QTI2eUQ4MGV0QmRrdnBvVVIycmxydmZsNm41c01SVUFRPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.5/TwinLink_0.0.5_darwin-x86_64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDRkVHBwanhPalNua09VVlhZZFg1RmhLS3BSNXJKRHFySktuc1A5WjQrQzB2aWYvOVowa25aN09vL0ZqT1QwL2dlaWxXRUVCL0pPSFlQbVFYQVd4dkFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc5MDkyCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC41CnBpZ1RHRnB2V2toaDlYLzArUmZzaW1YSitvRy94N1liaUR6TzVuQlpXL2w3S3cxMmM2cGVpSVlxK0ZnUFptRHhXNlNqZ0xKcEVYTUlIOE9MY2VjK0JRPT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.4/TwinLink_0.0.4_windows-x86_64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWHhFVVFtNkdIdHlOdVp0ZGZmL2Q5bWxoR2RXbVErVDlIMGh6TjNDdk9kbWkrbWsxZTgwMW5KNGYxbS9MNXhJbVp6WDdNcTA5Z3htNEc4NHpscmtUZWdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc2NDQ4CWZpbGU6VHdpbkxpbmtfMC4wLjRfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMC40Cm5NUW9tb01KUW02Zzc5bWdZZXVIOG85dDJoZ2Z0bzNCbk9JR2g3MC8vZ0FSSWRPZFA3a09yYmp4QkJaeU80L1FlM0V1UktxVkkvQjdxNy9DTCtuUERnPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.5/TwinLink_0.0.5_windows-x86_64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDl4bXN2ampsbGQ0b205b0YrTVU1RHRxTWQwNTZZckM2MWVSbU1WRlRrdnExdjJyQXhUM1FOMFFCQjdzaUFDRURTcXJ2c3Q1QXlUdmRHeDFlR2NJVXdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc5MDQzCWZpbGU6VHdpbkxpbmtfMC4wLjVfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMC41ClRtS0pzT2hTT2VHQVJwdHVUeCs0ak0vVDVYNUdrdmVyR2Q5c1JIYjVVMm51VytvS04rY2dyTW05UWFObHg3S2Rib1k5Wlgyamw1c2V6V1FYckVzTUNRPT0K"
     }
   }
 }
