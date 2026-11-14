@@ -1,18 +1,18 @@
 {
-  "version": "0.0.3",
-  "notes": "同频 TwinLink v0.0.3 · 预发布版，尚非正式版。\n\n- 调整桌面工作区与按钮对齐；新增外观面板，支持四套内置主题、系统明暗、自定义强调色与字号，以及本地 JSON 主题包的导入、编辑、导出和删除。\n- 聊天中显示文件邀请、接收确认、传输进度和完成记录；文件与文字按持久化时间交错排列，发送文件后保留聊天页面。\n- 输入框提供独立的文件和图片入口，支持桌面原生拖拽发送。图片在本地可用时显示缩略图，点击放大，支持 Escape 关闭；收到的图片须接收完成后才能预览。\n- 双方直连时先征求接收同意，再通过 P2P 流式传输，不预上传服务器，不设应用文件大小上限；无法直连时使用加密离线信箱，单文件上限 1 GiB。接收默认询问，可在设置开启当前房间自动接收。\n- 设置中新增本地数据导出和导入，覆盖聊天、传输记录与已保存房间/服务器配置；合并去重、保留本机接收目录、暂停连接且不重放旧发送队列。\n- 保留 v0.0.2 的 Windows 下载目录异常启动修复、启动失败提示和日志，以及 macOS 图标边距修正。\n\n图片预览支持 PNG、JPEG、GIF、WebP，最大 20 MiB、单边 16,384 像素、总计 4,000 万像素。该限制只影响预览，不限制 P2P 原文件大小。图片预览依赖本机文件，移动或删除后可能失效。备份不包含附件本体，且未加密，包含房间和服务器凭据，请妥善保管。\n\n构建、核心真实回环传输与隔离浏览器界面回归已通过。跨公网双机连接、Windows/macOS 原生图片预览与原生文件选择器仍待人工实测；浏览器预览不提供真实传输。发布流程要求三套平台构建、更新包签名与 Windows 安装启动检查全部通过后才更新下载与更新清单。\n\n更新源固定为本仓库的 GitHub 发布包及更新清单，安装须用户确认并重启。若旧版无法启动，请下载完整安装包手动升级；正常升级保留应用数据。\n\n局域网游戏模式仍未提供；macOS 使用 ad-hoc 签名且未公证，Windows 未使用商业代码签名证书。\n",
+  "version": "0.0.4",
+  "notes": "同频 TwinLink v0.0.4 · 预发布版\n\n- 修复聊天状态回退：服务器暂存或对方设备确认后，旧响应不再把消息显示为待发。\n- 联机恢复后，自动补发发件箱中尚未收到设备确认的消息，即使离线信箱暂时不可用。重试保留原消息和发送时间，接收方不会看到重复消息。\n- 聊天状态改为“尚未确认送达”“服务器已暂存”“已送达对方设备”。设备送达不代表用户已读。\n\n可从“设置 → 应用更新”升级，或下载对应平台的完整安装包。安装需确认并重启，正常升级保留本地聊天和房间数据。更新源固定为本仓库 GitHub。\n\n消息投递已通过本地回环故障测试及浏览器界面回归，仍待跨公网双机实测。\n",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.3/TwinLink_0.0.3_darwin-aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDh6ZGxxa0VmQmtDTzV5K0tQMXVidmdncWVvZjNHREtjdFRDWWtoYlFjcmpQMzc0L3VoSUtDRi91TnJNaERxc3h6SW9VVVFMS0NwQ1E5dXJMYldOeEE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAwODYxCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC4zClcyS2VIakhFWG43RXIvaTcrajY0RnZONENBOTZwZzNZcEthZHZnVFJaSkYwNndRMWFTOG81Mk5xZjM2eW4rZlg4VzBPSU94c1NlK0lqckpTWlJBbUJ3PT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.4/TwinLink_0.0.4_darwin-aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDhkd1p6NWp5bjkxMy9mQmx6eTRBL3JOTUNUa0FQc2xkazBEeWY4SWlGQ3BrUVQ1Umw3NTJNL3NPamZKcnFlVVFlNTAxWklNL2RJMk5TcUFQN21IVkFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc2NTE4CWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC40Cm5NV0NGdGFkc0l1RmNWVnhjNnl2MjJRSGMwTWV3c2lYTUp2Q0ZFakVnS3pKcFFMUW1DTTJJTVNBYnJzcGRPTHBzNkJSWi90c0lpNmxLcVZ0RkU0SUNBPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.3/TwinLink_0.0.3_darwin-x86_64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWDF3d2YvL3hXSWh6Slh6MWR0L0JxNFFVVHFmdDlVY0paQ3BzQjlyTEFWb1B2UGhmd09pbnFabkFwbTRqRlRUamVXQmJaZ21Nd3VZbDNua2dWMXRvU2dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAxMTc0CWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC4zCm93QUhkMzJmd3ppMEZJR0FxbHhZb1FHMVlSMkZWUXN0enVxVWtyYjlJcUtzR2luNDhrL0huTlQ0cDhyM3BtU2UwcjkwVnVGaUlmcldIVlYrU1pWWUJBPT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.4/TwinLink_0.0.4_darwin-x86_64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWHdveDZLSHI4Yk1PWkZFZFJCK1lBY2ZkbEJ5b29WMEpRMitRejIzOHNTTnRGM25Ham1JV2J0WThVcGxQRG03a2k1T2hUc2J4bnVsUTFsOUJ1RXBkTHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc2OTUzCWZpbGU6VHdpbkxpbmsuYXBwLnRhci5negl2ZXJzaW9uOjAuMC40ClU2WWkxQy9sVHlNbjdndjNZSnlpS096eUxFSm52bkhoUjNITTlTVDFOSzRFcUVQZlNmVnk3QTI2eUQ4MGV0QmRrdnBvVVIycmxydmZsNm41c01SVUFRPT0K"
     },
     "windows-x86_64": {
-      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.3/TwinLink_0.0.3_windows-x86_64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWHoyTlN3NmRMY1orRVprb2pNbllFMFRQeDV4elZ3dVdKS3BUc2hYVW1BMlNNT2lsS3ZLcHNvT1JqUkpqR3RmcFhSaFNmenBobXVQeEhLSXZNbkpsZmdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODAwOTYwCWZpbGU6VHdpbkxpbmtfMC4wLjNfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMC4zCmpTMzlYSXlxb0hDWjNoVmozbm9zcVArTU8wS1NqUW5PTmcwb3pZT0RmZzlxcnMxZjZoZ0FzYVhnVy9rWWpvdFdGRkxLSHhHcVJoK0FTSDQ0eksrT0J3PT0K"
+      "url": "https://github.com/Yumouqianxia/twinlink/releases/download/v0.0.4/TwinLink_0.0.4_windows-x86_64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTRXBuV2g5QkcyWHhFVVFtNkdIdHlOdVp0ZGZmL2Q5bWxoR2RXbVErVDlIMGh6TjNDdk9kbWkrbWsxZTgwMW5KNGYxbS9MNXhJbVp6WDdNcTA5Z3htNEc4NHpscmtUZWdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Njc2NDQ4CWZpbGU6VHdpbkxpbmtfMC4wLjRfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMC40Cm5NUW9tb01KUW02Zzc5bWdZZXVIOG85dDJoZ2Z0bzNCbk9JR2g3MC8vZ0FSSWRPZFA3a09yYmp4QkJaeU80L1FlM0V1UktxVkkvQjdxNy9DTCtuUERnPT0K"
     }
   }
 }
