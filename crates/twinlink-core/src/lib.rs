@@ -8,6 +8,7 @@ pub mod model;
 pub mod preview;
 pub mod network;
 pub mod pairing;
+mod session;
 pub mod state;
 mod storage;
 mod wire;
@@ -31,6 +32,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use wire::{Control, Frame};
+
+use session::SessionState;
 
 struct Inner {
     profile: Profile,
@@ -700,7 +703,14 @@ impl Core {
     }
 
     pub(crate) async fn mark_disconnected(&self) {
+        self.mark_disconnected_for(None).await;
+    }
+
+    async fn mark_disconnected_for(&self, generation: Option<u64>) {
         let _operation = self.operations.lock().await;
+        if let Some(expected) = generation {
+            if self.inner.lock().await.generation != expected { return; }
+        }
         {
             let mut direct = self.direct.lock().await;
             direct.cancel.cancel();
@@ -799,42 +809,106 @@ impl Core {
             inner.reconnect = None;
         }
         self.emit_state().await;
+        let pending = Arc::new(Mutex::new(SessionState::default()));
+        let receipt_ready = pending.lock().await.receipt_ready.clone();
         let write_loop = async {
-            let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+            let mut last_ping = Instant::now();
+            let mut receipts_in_a_row = 0;
+            let mut last_was_retry = false;
             loop {
-                tokio::select! {
-                    frame = rx.recv() => match frame {
-                        Some(frame) => wire::write_frame(&mut writer, &frame).await?,
-                        None => break,
-                    },
-                    _ = heartbeat.tick() => wire::write_frame(&mut writer, &Frame::Control(Control::Ping)).await?,
+                let frame = if last_ping.elapsed() >= Duration::from_secs(20) {
+                    last_ping = Instant::now();
+                    Frame::Control(Control::Ping)
+                } else {
+                    // At most four receipts before giving queued file/chat data
+                    // a turn. Receipts bypass the potentially full data queue.
+                    let receipt = if receipts_in_a_row < 4 {
+                        pending.lock().await.pop_receipt()
+                    } else { None };
+                    // Alternate retries with available ordinary data, including
+                    // on slow links where retries can build up between writes.
+                    let data = if receipt.is_none() && last_was_retry { rx.try_recv().ok() } else { None };
+                    let retry = if receipt.is_none() && data.is_none() { pending.lock().await.pop_retry() } else { None };
+                    if let Some(id) = receipt {
+                        receipts_in_a_row += 1;
+                        Frame::Control(Control::Receipt { id })
+                    } else if let Some(frame) = data {
+                        receipts_in_a_row = 0;
+                        last_was_retry = false;
+                        frame
+                    } else if let Some(message) = retry {
+                        receipts_in_a_row = 0;
+                        last_was_retry = true;
+                        Frame::Control(Control::Chat { id: Uuid::parse_str(&message.id)?, text: message.text, timestamp: message.timestamp })
+                    } else if let Ok(frame) = rx.try_recv() {
+                        receipts_in_a_row = 0;
+                        last_was_retry = false;
+                        frame
+                    } else {
+                        receipts_in_a_row = 0;
+                        let state = pending.lock().await;
+                        let ready = state.has_receipts() || state.has_retries();
+                        drop(state);
+                        if ready { continue; }
+                        // Nothing is mid-read or mid-write when this select is
+                        // cancelled. Notify and recv are cancellation-safe.
+                        tokio::select! {
+                            _ = receipt_ready.notified() => continue,
+                            frame = rx.recv() => match frame { Some(frame) => { last_was_retry = false; frame }, None => break },
+                            _ = sleep(Duration::from_secs(20).saturating_sub(last_ping.elapsed())) => continue,
+                        }
+                    }
+                };
+                anyhow::ensure!(self.generation_is_current(room_id, generation).await, "连接已改变");
+                wire::write_frame(&mut writer, &frame).await?;
+                if let Frame::Control(Control::Chat { id, .. }) = &frame {
+                    pending.lock().await.record_sent(&id.to_string(), Instant::now());
                 }
             }
             Ok::<(), anyhow::Error>(())
         };
         let read_loop = async {
             loop {
+                // Keep the same read future until a complete frame or genuine
+                // timeout. Retrying chat must never discard partial TCP bytes.
                 let frame = timeout(Duration::from_secs(70), wire::read_frame(&mut reader))
-                    .await
-                    .context("连接长时间未响应")??;
-                self.handle(frame, &tx, room_id, generation).await?;
+                    .await.context("连接长时间未响应")??;
+                self.handle(frame, &tx, room_id, generation, &pending).await?;
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
         };
-        let outcome = tokio::select! {
-            _ = cancel.cancelled() => Ok(()),
-            result = write_loop => result,
-            result = read_loop => result,
+        let retry_loop = async {
+            let mut tick = tokio::time::interval(session::RETRANSMIT_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                self.resend_unconfirmed(room_id, generation, &pending).await?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
         };
-        // After the handshake any failure is a session end, not a pairing
-        // failure: surface it and let the supervisor retry with backoff.
+        let identity_changed = async {
+            let mut desired = self.desired.subscribe();
+            loop {
+                if !self.generation_is_current(room_id, generation).await { break; }
+                if desired.changed().await.is_err() { break; }
+            }
+        };
+        let outcome = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Ok(()),
+            _ = identity_changed => Ok(()),
+            result = read_loop => result,
+            result = write_loop => result,
+            result = retry_loop => result,
+        };
         if !cancel.is_cancelled() {
             if let Err(error) = outcome {
                 self.emit_error(format!("连接已断开：{error:#}"));
             }
         }
-        self.mark_disconnected().await;
+        self.mark_disconnected_for(Some(generation)).await;
         Ok(())
     }
 
@@ -844,6 +918,7 @@ impl Core {
         tx: &mpsc::Sender<Frame>,
         room_id: &str,
         generation: u64,
+        pending: &Arc<Mutex<SessionState>>,
     ) -> Result<()> {
         let _operation = self.operations.lock().await;
         anyhow::ensure!(self.generation_is_current(room_id, generation).await, "连接已改变");
@@ -852,6 +927,7 @@ impl Core {
             Frame::Control(Control::Ping) => { let _ = tx.try_send(Frame::Control(Control::Pong)); },
             Frame::Control(Control::Pong) => (),
             Frame::Control(Control::Receipt { id }) => {
+                pending.lock().await.acknowledged(&id.to_string());
                 if let Some(message) = self.store.apply_receipt(room_id, &id.to_string(), None, "direct")? {
                     self.emit_in_room(room_id, AppEvent::Message { message }).await;
                 }
@@ -885,7 +961,9 @@ impl Core {
                     self.store.save_message(&room, &message)?;
                     self.emit_in_room(&room, AppEvent::Message { message }).await;
                 }
-                let _ = tx.try_send(Frame::Control(Control::Receipt { id }));
+                // A retransmitted chat must always be re-acknowledged: the first
+                // receipt may itself have been lost on the way back.
+                pending.lock().await.receipt(id)?;
             }
             Frame::Control(Control::Offer { id, name, size, hash }) => {
                 if self.direct.lock().await.supported {
@@ -905,6 +983,35 @@ impl Core {
                 }
             }
             Frame::Chunk { id, bytes } => self.direct_chunk(room_id, id, bytes).await?,
+        }
+        Ok(())
+    }
+
+    /// Replay only real durable pending/stored outbox messages. A rotating
+    /// cursor keeps a lost receipt at the head from starving later messages.
+    async fn resend_unconfirmed(
+        self: &Arc<Self>,
+        room_id: &str,
+        generation: u64,
+        state: &Arc<Mutex<SessionState>>,
+    ) -> Result<()> {
+        let _operation = self.operations.lock().await;
+        anyhow::ensure!(self.generation_is_current(room_id, generation).await, "连接已改变");
+        let mut state = state.lock().await;
+        let mut rows = self.store.unconfirmed_outgoing_page(room_id, state.cursor, session::BATCH)?;
+        if rows.is_empty() {
+            state.cursor = 0;
+            rows = self.store.unconfirmed_outgoing_page(room_id, 0, session::BATCH)?;
+        }
+        let now = Instant::now();
+        let mut queued = 0;
+        for (cursor, message) in rows {
+            state.cursor = cursor;
+            if !message.outgoing || !matches!(message.delivery.as_str(), "pending" | "stored" | "unknown") || !state.due(&message.id, now) { continue; }
+            if Uuid::parse_str(&message.id).is_err() { continue; }
+            if !state.retry(message) { break; }
+            queued += 1;
+            if queued >= session::PER_TICK { break; }
         }
         Ok(())
     }

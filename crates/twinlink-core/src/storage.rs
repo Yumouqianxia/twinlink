@@ -268,6 +268,20 @@ impl Store {
         Ok(count > 0)
     }
 
+    /// Only messages with an original durable outbox are eligible. Stored is
+    /// server acceptance, not a device receipt, and remains replayable.
+    pub fn unconfirmed_outgoing_page(&self, room: &str, after: i64, limit: usize) -> Result<Vec<(i64, Message)>> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT o.rowid,m.value FROM messages m
+             JOIN outbox o ON o.room=m.room AND (o.dedupe=m.id OR o.dedupe='message:'||m.id) AND o.kind='message'
+             WHERE m.room=?1 AND o.state IN ('pending','stored') AND o.rowid>?2
+             ORDER BY o.rowid ASC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![room, after, limit as i64], |row| Ok((row.get::<_,i64>(0)?, row.get::<_,String>(1)?)))?;
+        rows.map(|row| { let (cursor, raw) = row?; Ok((cursor, serde_json::from_str(&raw)?)) }).collect()
+    }
+
     /// Delivery is monotonic: a delayed mailbox "stored" acknowledgement can
     /// never overwrite a direct-session "delivered" receipt.
     #[cfg(test)]

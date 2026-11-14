@@ -103,6 +103,14 @@ async fn image_previews_require_local_file_and_consent_and_keep_timeline_time() 
 /// the supervisor or EasyTier. The derived addresses are irrelevant here; only
 /// the shared secret must match on both sides.
 async fn pair() -> (Arc<Core>, Arc<Core>, tempfile::TempDir, tempfile::TempDir, CancellationToken) {
+    let (left, right, left_dir, right_dir) = linked().await;
+    let cancel = connect_pair(&left, &right).await;
+    (left, right, left_dir, right_dir, cancel)
+}
+
+/// Two paired cores with no live session yet, so a test can put its own proxy
+/// (or its own instrumented socket) between them.
+async fn linked() -> (Arc<Core>, Arc<Core>, tempfile::TempDir, tempfile::TempDir) {
     let left_dir = tempfile::tempdir().unwrap();
     let right_dir = tempfile::tempdir().unwrap();
     let left =
@@ -112,8 +120,7 @@ async fn pair() -> (Arc<Core>, Arc<Core>, tempfile::TempDir, tempfile::TempDir, 
     left.import_server_code(&pairing::encode_server_code(&test_server(TEST_PREFIX)).unwrap()).await.unwrap();
     let invitation = left.create_room().await.unwrap();
     right.join_room(&invitation).await.unwrap();
-    let cancel = connect_pair(&left, &right).await;
-    (left, right, left_dir, right_dir, cancel)
+    (left, right, left_dir, right_dir)
 }
 
 async fn connect_pair(left: &Arc<Core>, right: &Arc<Core>) -> CancellationToken {
@@ -1015,6 +1022,10 @@ async fn p2p_bidirectional_auto_accept_streams_without_deadlock() {
     tokio::fs::write(&source_b, &b).await.unwrap();
     let (sent_a, sent_b) = tokio::join!(left.offer_file(source_a), right.offer_file(source_b));
     sent_a.unwrap(); sent_b.unwrap();
+    // Chat/receipts share the connection with two real file streams.
+    let (chat_a, chat_b) = tokio::join!(left.send_message("chat during files A".into()), right.send_message("chat during files B".into()));
+    let (chat_a, chat_b) = (chat_a.unwrap(), chat_b.unwrap());
+    tokio::join!(wait_delivered(&left, &chat_a.id), wait_delivered(&right, &chat_b.id));
     timeout(Duration::from_secs(15), async {
         loop {
             let a = left.snapshot().await.unwrap(); let b = right.snapshot().await.unwrap();
@@ -1261,4 +1272,226 @@ async fn new_room_resets_auto_accept_and_completion_can_overtake_fallback() {
     assert!(core.store.complete_upload(&room, &id, &completed).unwrap());
     core.store.set_upload_status(&room, &id, "cancelled", None).unwrap();
     assert!(!core.store.complete_upload(&room, &id, &completed).unwrap(), "late receipts must never revive cancellation");
+}
+
+
+/* ---------- direct retransmission: real loopback fault injection ---------- */
+
+#[derive(Default)]
+struct LinkFaults {
+    drop_chat: std::sync::atomic::AtomicUsize,
+    drop_receipt: std::sync::atomic::AtomicUsize,
+    fragment_chat: std::sync::atomic::AtomicBool,
+    blocked_receipts: std::collections::HashSet<Uuid>,
+    dropped: std::sync::atomic::AtomicUsize,
+    fragmented: std::sync::atomic::AtomicUsize,
+}
+
+async fn relay_frames(mut from: tokio::net::tcp::OwnedReadHalf, mut to: tokio::net::tcp::OwnedWriteHalf, faults: Arc<LinkFaults>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::sync::atomic::Ordering;
+    loop {
+        let Ok(len) = from.read_u32().await else { break };
+        assert!(len <= 128 * 1024);
+        let mut body = vec![0; len as usize];
+        if from.read_exact(&mut body).await.is_err() { break; }
+        let control = if body.first() == Some(&0) { serde_json::from_slice::<Control>(&body[1..]).ok() } else { None };
+        let counter = match &control {
+            Some(Control::Chat { .. }) => Some(&faults.drop_chat),
+            Some(Control::Receipt { id }) if faults.blocked_receipts.contains(id) => {
+                faults.dropped.fetch_add(1, Ordering::SeqCst); continue;
+            },
+            Some(Control::Receipt { .. }) => Some(&faults.drop_receipt),
+            _ => None,
+        };
+        if counter.is_some_and(|counter| counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| value.checked_sub(1)).is_ok()) {
+            faults.dropped.fetch_add(1, Ordering::SeqCst); continue;
+        }
+        if matches!(control, Some(Control::Chat { .. })) && faults.fragment_chat.swap(false, Ordering::SeqCst) {
+            faults.fragmented.fetch_add(1, Ordering::SeqCst);
+            let header = len.to_be_bytes();
+            if to.write_all(&header[..2]).await.is_err() { break; }
+            sleep(session::RETRANSMIT_TICK + Duration::from_millis(200)).await;
+            if to.write_all(&header[2..]).await.is_err() { break; }
+            let half = body.len()/2;
+            if to.write_all(&body[..half]).await.is_err() { break; }
+            sleep(session::RETRANSMIT_TICK + Duration::from_millis(200)).await;
+            if to.write_all(&body[half..]).await.is_err() { break; }
+        } else if to.write_all(&len.to_be_bytes()).await.is_err() || to.write_all(&body).await.is_err() { break; }
+    }
+    let _ = to.shutdown().await;
+}
+
+async fn connect_faulty(left: &Arc<Core>, right: &Arc<Core>, faults: Arc<LinkFaults>) -> CancellationToken {
+    let room = left.current_room_id().await.unwrap();
+    let lg = left.inner.lock().await.generation;
+    let rg = right.inner.lock().await.generation;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_address = proxy.local_addr().unwrap();
+    let cancel = CancellationToken::new();
+    let (core, id, stop) = (left.clone(), room.clone(), cancel.clone());
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let _ = core.session(stream, "test-secret", true, stop, &id, lg).await;
+    });
+    let stop = cancel.clone();
+    tokio::spawn(async move {
+        let (incoming, _) = proxy.accept().await.unwrap();
+        let outgoing = TcpStream::connect(address).await.unwrap();
+        let (ir, iw) = incoming.into_split();
+        let (or, ow) = outgoing.into_split();
+        tokio::select! {
+            _ = stop.cancelled() => (),
+            _ = relay_frames(ir, ow, faults.clone()) => (),
+            _ = relay_frames(or, iw, faults.clone()) => (),
+        }
+    });
+    let (core, stop) = (right.clone(), cancel.clone());
+    tokio::spawn(async move {
+        let stream = TcpStream::connect(proxy_address).await.unwrap();
+        let _ = core.session(stream, "test-secret", false, stop, &room, rg).await;
+    });
+    timeout(Duration::from_secs(5), async {
+        while left.snapshot().await.unwrap().connection != "connected" || right.snapshot().await.unwrap().connection != "connected" { sleep(Duration::from_millis(10)).await; }
+    }).await.unwrap();
+    cancel
+}
+
+async fn wait_delivered(core: &Arc<Core>, id: &str) {
+    timeout(Duration::from_secs(40), async {
+        while !core.snapshot().await.unwrap().messages.iter().any(|message| message.id == id && message.delivery == "delivered") { sleep(Duration::from_millis(20)).await; }
+    }).await.expect("real peer receipt must arrive");
+}
+
+#[tokio::test]
+async fn lost_direct_chat_is_retried_with_original_identity() {
+    use std::sync::atomic::Ordering;
+    let (left, right, _ld, _rd) = linked().await;
+    let faults = Arc::new(LinkFaults::default());
+    faults.drop_chat.store(1, Ordering::SeqCst);
+    let cancel = connect_faulty(&left, &right, faults.clone()).await;
+    let sent = left.send_message("first frame dropped".into()).await.unwrap();
+    wait_delivered(&left, &sent.id).await;
+    assert_eq!(faults.dropped.load(Ordering::SeqCst), 1);
+    let received: Vec<_> = right.snapshot().await.unwrap().messages.into_iter().filter(|m|m.id == sent.id).collect();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].timestamp, sent.timestamp);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn lost_direct_receipt_is_retried_without_duplicate_chat() {
+    use std::sync::atomic::Ordering;
+    let (left, right, _ld, _rd) = linked().await;
+    let faults = Arc::new(LinkFaults::default());
+    faults.drop_receipt.store(1, Ordering::SeqCst);
+    let cancel = connect_faulty(&left, &right, faults.clone()).await;
+    let sent = left.send_message("receipt dropped".into()).await.unwrap();
+    wait_delivered(&left, &sent.id).await;
+    assert_eq!(faults.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(right.snapshot().await.unwrap().messages.iter().filter(|m| m.id == sent.id).count(), 1);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn fragmented_frame_survives_multiple_retry_ticks() {
+    use std::sync::atomic::Ordering;
+    let (left, right, _ld, _rd) = linked().await;
+    let faults = Arc::new(LinkFaults::default());
+    faults.fragment_chat.store(true, Ordering::SeqCst);
+    let cancel = connect_faulty(&left, &right, faults.clone()).await;
+    let sent = left.send_message("partial header and body cross retry ticks".into()).await.unwrap();
+    wait_delivered(&left, &sent.id).await;
+    assert_eq!(faults.fragmented.load(Ordering::SeqCst), 1);
+    assert_eq!(right.snapshot().await.unwrap().messages.iter().filter(|m| m.id == sent.id).count(), 1);
+    assert_eq!(left.snapshot().await.unwrap().connection, "connected");
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn offline_queue_reconnects_directly_without_mailbox_or_history_replay() {
+    let (left, right, _ld, _rd) = linked().await;
+    let room = left.current_room_id().await.unwrap();
+    let sent = left.send_message("queued before any connection".into()).await.unwrap();
+    // A history-only row has no original send outbox, like imported backups.
+    let history = Message { id:Uuid::new_v4().to_string(), text:"history only".into(), outgoing:true, timestamp:now(), delivery:"unknown".into(), via:None };
+    left.store.save_message(&room, &history).unwrap();
+    let cancel = connect_faulty(&left, &right, Arc::new(LinkFaults::default())).await;
+    wait_delivered(&left, &sent.id).await;
+    sleep(session::RETRANSMIT_TICK + Duration::from_millis(100)).await;
+    assert!(right.snapshot().await.unwrap().messages.iter().all(|m|m.id!=history.id));
+    assert_eq!(right.snapshot().await.unwrap().messages.iter().filter(|m|m.id==sent.id).count(),1);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn server_stored_original_outbox_replays_over_direct_connection() {
+    let (left, right, _ld, _rd) = linked().await;
+    let stored = left.inner.lock().await.room.clone().unwrap();
+    let room = stored.spec().unwrap().room_id;
+    let fake = FakeServer {
+        room_id:room.clone(), host:Arc::new(tokio::sync::Mutex::new(FakeState::default())),
+        quota_at:Arc::new(tokio::sync::Mutex::new(None)), transient:Arc::new(tokio::sync::Mutex::new(None)), transient_hits:Arc::new(tokio::sync::Mutex::new(Vec::new())),
+    };
+    *left.transport.lock().unwrap()=Some(Arc::new(fake));
+    let runner=left.clone();
+    let task=tokio::spawn(async move {runner.mailbox_loop().await});
+    let sent=left.send_message("accepted by mailbox but device still offline".into()).await.unwrap();
+    timeout(Duration::from_secs(5), async {
+        while left.store.message(&room,&sent.id).unwrap().unwrap().delivery!="stored" {sleep(Duration::from_millis(20)).await;}
+    }).await.unwrap();
+    task.abort(); let _=task.await;
+    assert!(right.snapshot().await.unwrap().messages.is_empty());
+    let cancel=connect_faulty(&left,&right,Arc::new(LinkFaults::default())).await;
+    wait_delivered(&left,&sent.id).await;
+    assert_eq!(left.store.message(&room,&sent.id).unwrap().unwrap().via.as_deref(),Some("direct"));
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn unacknowledged_head_does_not_starve_later_outbox() {
+    let (left,right,_ld,_rd)=linked().await;
+    let mut messages=Vec::new();
+    for i in 0..8 {messages.push(left.send_message(format!("queued {i}")).await.unwrap());}
+    let faults=Arc::new(LinkFaults {blocked_receipts:messages[..4].iter().map(|m|Uuid::parse_str(&m.id).unwrap()).collect(),..Default::default()});
+    let cancel=connect_faulty(&left,&right,faults).await;
+    wait_delivered(&left,&messages[7].id).await;
+    assert_eq!(right.snapshot().await.unwrap().messages.len(),8);
+    assert_eq!(left.store.message(&left.current_room_id().await.unwrap(),&messages[0].id).unwrap().unwrap().delivery,"pending");
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn retransmission_rejects_paused_or_old_room_generation() {
+    let (left,_right,_ld,_rd)=linked().await;
+    let room=left.current_room_id().await.unwrap();
+    let generation=left.inner.lock().await.generation;
+    left.send_message("must stay local while paused".into()).await.unwrap();
+    let state=Arc::new(Mutex::new(SessionState::default()));
+    left.pause().await.unwrap();
+    assert!(left.resend_unconfirmed(&room,generation,&state).await.is_err());
+    assert!(state.lock().await.pop_retry().is_none());
+    left.create_room().await.unwrap();
+    assert!(left.resend_unconfirmed(&room,generation,&state).await.is_err());
+    assert!(state.lock().await.pop_retry().is_none());
+}
+
+#[tokio::test]
+async fn full_file_queue_cannot_block_durable_chat_retry_admission() {
+    let (left,_right,_ld,_rd)=linked().await;
+    let room=left.current_room_id().await.unwrap();
+    let generation=left.inner.lock().await.generation;
+    let (tx,_rx)=mpsc::channel(8);
+    for _ in 0..8 {assert!(tx.try_send(Frame::Chunk {id:Uuid::new_v4(),bytes:vec![0;64]}).is_ok());}
+    left.inner.lock().await.sender=Some(tx.clone());
+    let sent=left.send_message("data queue full".into()).await.unwrap();
+    assert_eq!(tx.capacity(),0);
+    let state=Arc::new(Mutex::new(SessionState::default()));
+    left.resend_unconfirmed(&room,generation,&state).await.unwrap();
+    let retry=state.lock().await.pop_retry().unwrap();
+    assert_eq!(retry.id,sent.id);
+    assert_eq!(retry.timestamp,sent.timestamp);
+    assert_eq!(tx.capacity(),0,"control admission did not drop or consume file frames");
 }

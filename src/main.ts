@@ -1,6 +1,6 @@
 import './styles.css';
 import { initializeUpdates } from './updates';
-import { api, type AppEvent, type Message, type Snapshot, type Transfer } from './api';
+import { api, type AppEvent, type Delivery, type Message, type Snapshot, type Transfer } from './api';
 import {
   exportThemeJson,
   getAppearance,
@@ -128,6 +128,10 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
  * changes, so a stale response can never pollute the new transcript. */
 let viewRoomId: string | null = null;
 let roomEpoch = 0;
+/* Bumped whenever the identity of the displayed room changes. In-flight
+ * snapshots compare against it so a slow reply cannot resurrect the room the
+ * user just left. */
+let stateEpoch = 0;
 let historyHasMore = false;
 let historyLoading = false;
 /* Last message id painted into the thread, so a receipt update is not mistaken
@@ -592,18 +596,29 @@ function emptyMarkup(): string {
  * a server-side encrypted copy is not peer acknowledgement. Legacy rows with no
  * receipt metadata stay `unknown` and are never promoted. */
 const deliveryLabels: Record<Message['delivery'], string> = {
-  pending: '本机待发',
-  stored: '服务器已存',
-  delivered: '对方已收到',
+  pending: '尚未确认送达',
+  stored: '服务器已暂存',
+  delivered: '已送达对方设备',
   unknown: '未确认',
+};
+
+/* Short, honest explanations. `stored` means the server holds an encrypted copy
+ * and `delivered` means the peer's device confirmed it — neither is a read
+ * receipt, and no state here is inferred from the connection. */
+const deliveryHints: Record<Message['delivery'], string> = {
+  pending: '尚未收到服务器或对方设备的确认；消息已保存在本机。这不能证明对方未收到。',
+  stored: '服务器已加密保存，等待对方设备收取（不代表已读）',
+  delivered: '对方设备已确认收到（不代表已读）',
+  unknown: '旧版本留下的记录，没有保存送达状态',
 };
 
 function messageMarkup(message: Message): string {
   const who = message.outgoing ? '我' : (state.peerName ?? '对方');
   const stamp = new Date(message.timestamp);
+  const via = message.via === 'direct' ? '，联机直发' : message.via === 'mailbox' ? '，离线信箱' : '';
   const delivery = message.outgoing
     ? `<span class="msg-status" data-delivery="${esc(message.delivery)}" title="${
-        message.via === 'direct' ? '通过联机直发' : message.via === 'mailbox' ? '通过离线信箱' : ''
+        esc(`${deliveryHints[message.delivery] ?? deliveryHints.unknown}${via}`)
       }">${deliveryLabels[message.delivery] ?? deliveryLabels.unknown}</span>`
     : '';
   return `<li class="msg ${message.outgoing ? 'out' : 'in'}" data-id="${esc(message.id)}">
@@ -1032,7 +1047,9 @@ const mailboxLabels: Record<string, string> = {
 
 function renderMailbox() {
   const mailbox = state.mailbox;
-  const queued = mailbox.pending > 0 ? ` · ${mailbox.pending} 条待发` : '';
+  /* `pending` counts every durably queued item — chat, receipts and file
+   * events — not just unsent messages, so it must not be labelled "条待发". */
+  const queued = mailbox.pending > 0 ? ` · ${mailbox.pending} 项待同步` : '';
   const label = `${mailboxLabels[mailbox.state] ?? '离线信箱状态未知'}${queued}`;
   const tone = mailbox.state === 'online' ? 'online' : mailbox.state === 'error' ? 'error' : mailbox.state === 'retrying' ? 'retrying' : 'muted';
 
@@ -1113,7 +1130,7 @@ function renderRoomDialog() {
     ? `${state.server.relayUrl} · 信箱 ${state.server.mailboxHost}`
     : '尚未导入服务器设置码';
   $('#room-mailbox').textContent = `${mailboxLabels[state.mailbox.state] ?? '状态未知'}${
-    state.mailbox.pending > 0 ? `（${state.mailbox.pending} 条待发）` : ''
+    state.mailbox.pending > 0 ? `（${state.mailbox.pending} 项待同步）` : ''
   }`;
 }
 
@@ -1127,6 +1144,41 @@ function renderAll() {
 
 /* ---------- data ---------- */
 
+/* Delivery is monotonic: `pending` (no confirmation yet) -> `stored` (the
+ * server holds a copy) -> `delivered` (the peer device confirmed). `unknown`
+ * marks a legacy record that predates the metadata and ranks just above
+ * pending, so a real receipt can still promote it. A late response may never
+ * move a message backwards: sending persists the message locally first, so the
+ * `sendMessage()` reply and a snapshot taken before the receipt can both arrive
+ * after the receipt already confirmed it. */
+const deliveryRank: Record<Delivery, number> = {
+  pending: 0,
+  unknown: 1,
+  stored: 2,
+  delivered: 3,
+};
+
+function rankOf(delivery: Delivery): number {
+  return deliveryRank[delivery] ?? 0;
+}
+
+/** Pick the copy of the same message that carries the stronger evidence.
+ * The message id and the original timestamp always win, so neither a resend nor
+ * a stale snapshot can rewrite when the message was written or who it is. */
+function mergeDelivery(current: Message, incoming: Message): Message {
+  if (current.id !== incoming.id) return incoming;
+  const before = rankOf(current.delivery);
+  const after = rankOf(incoming.delivery);
+  if (after > before) {
+    return { ...current, delivery: incoming.delivery, via: incoming.via ?? current.via };
+  }
+  if (after < before) return current;
+  /* Same rank: keep whichever copy names a transport, otherwise keep the copy
+   * already on screen so repeated events cannot flicker the row. */
+  if (!incoming.via && current.via) return current;
+  return { ...current, via: current.via ?? incoming.via };
+}
+
 function mergeMessage(message: Message) {
   const index = state.messages.findIndex(item => item.id === message.id);
   /* A delivery/via update for a known ID replaces it in place; it must never be
@@ -1134,7 +1186,7 @@ function mergeMessage(message: Message) {
    * loaded window (an old receipt) keeps chronological order instead of being
    * shown as the newest row. */
   if (index >= 0) {
-    state.messages[index] = message;
+    state.messages[index] = mergeDelivery(state.messages[index], message);
   } else {
     const at = state.messages.findIndex(item => item.timestamp > message.timestamp);
     if (at < 0) state.messages.push(message);
@@ -1151,8 +1203,14 @@ function mergeTransfer(transfer: Transfer) {
 }
 
 async function refresh() {
+  /* A snapshot describes the room that was current when it was requested. If the
+   * room changes while it is in flight, adopting it would show the previous
+   * transcript under the new room's header, so the reply is discarded. */
+  const epoch = stateEpoch;
   try {
-    adoptSnapshot(await api.snapshot());
+    const snapshot = await api.snapshot();
+    if (epoch !== stateEpoch) return;
+    adoptSnapshot(snapshot);
   } catch (error) {
     toast(`无法读取当前状态：${String(error)}`);
   }
@@ -1162,10 +1220,16 @@ async function refresh() {
  * A resync or refresh must not silently truncate the transcript to the newest
  * page, nor make the "load earlier" control disappear. */
 function adoptSnapshot(snapshot: Snapshot) {
-  const sameRoom = (snapshot.room?.roomId ?? null) === viewRoomId;
+  const incoming = snapshot.room?.roomId ?? null;
+  const sameRoom = incoming === (state.room?.roomId ?? null);
+  if (incoming !== (state.room?.roomId ?? null)) stateEpoch += 1;
   const carried = sameRoom ? state.messages : [];
+  const carriedTransfers = sameRoom ? state.transfers : [];
   state = snapshot;
-  if (sameRoom) state.messages = mergeMessages(carried, snapshot.messages);
+  if (sameRoom) {
+    state.messages = mergeMessages(carried, snapshot.messages);
+    state.transfers = mergeTransfers(carriedTransfers, snapshot.transfers);
+  }
   renderAll();
 }
 
@@ -1176,7 +1240,8 @@ function mergeMessages(carried: Message[], fresh: Message[]): Message[] {
   const merged: Message[] = [];
   const seen = new Set<string>();
   for (const message of carried) {
-    merged.push(latest.get(message.id) ?? message);
+    const update = latest.get(message.id);
+    merged.push(update ? mergeDelivery(message, update) : message);
     seen.add(message.id);
   }
   for (const message of fresh) {
@@ -1184,7 +1249,20 @@ function mergeMessages(carried: Message[], fresh: Message[]): Message[] {
     seen.add(message.id);
     merged.push(message);
   }
-  return merged;
+  /* Older pages and a fresh snapshot can interleave; keep oldest-first. */
+  return merged.sort((left, right) => left.timestamp - right.timestamp);
+}
+
+/** Preserve known completions when a same-room snapshot predates that event. */
+function mergeTransfers(carried: Transfer[], fresh: Transfer[]): Transfer[] {
+  if (!carried.length) return fresh;
+  const byId = new Map(fresh.map(transfer => [transfer.id, transfer]));
+  for (const transfer of carried) {
+    const update = byId.get(transfer.id);
+    if (!update) byId.set(transfer.id, transfer);
+    else if (transfer.status === 'completed' && update.status !== 'completed') byId.set(transfer.id, transfer);
+  }
+  return [...byId.values()];
 }
 
 function applyEvent(event: AppEvent) {
@@ -1202,6 +1280,7 @@ function applyEvent(event: AppEvent) {
     state.room = event.room;
     /* a different room means a different transcript; reload it from disk */
     if ((event.room?.roomId ?? null) !== previousRoom) {
+      stateEpoch += 1;
       state.messages = [];
       state.transfers = [];
       void refresh();
@@ -1942,10 +2021,14 @@ function resizeInput() {
 async function send() {
   const text = input.value;
   if (sending || !text.trim() || !state.room) return;
+  const epoch = stateEpoch;
+  const room = state.room.roomId;
   sending = true;
   renderComposer();
   try {
-    mergeMessage(await api.sendMessage(text));
+    const message = await api.sendMessage(text);
+    if (epoch !== stateEpoch || state.room?.roomId !== room) return;
+    mergeMessage(message);
     renderThread();
     if (input.value === text) {
       input.value = '';
